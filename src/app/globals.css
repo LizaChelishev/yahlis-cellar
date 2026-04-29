@@ -1,26 +1,75 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --cream: #fdf6e8;
+  --cream-card: #fbf0d9;
+  --walnut-dark: #3d2817;
+  --walnut-mid: #5c3a22;
+  --walnut-deep: #2a1810;
+  --cabinet: #1f1408;
+  --amber-glow: rgba(244, 184, 96, 0.08);
+  --brass: #b8893d;
+  --brass-light: #d9a85a;
+  --terracotta: #c8553d;
+  --terracotta-hover: #a8412e;
+  --text-deep: #2a1810;
+  --text-muted: #6b5544;
+  --border-soft: #e8d9b8;
+
+  --background: var(--cream);
+  --foreground: var(--text-deep);
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  --color-cream: var(--cream);
+  --color-cream-card: var(--cream-card);
+  --color-walnut-dark: var(--walnut-dark);
+  --color-walnut-mid: var(--walnut-mid);
+  --color-walnut-deep: var(--walnut-deep);
+  --color-cabinet: var(--cabinet);
+  --color-brass: var(--brass);
+  --color-brass-light: var(--brass-light);
+  --color-terracotta: var(--terracotta);
+  --color-terracotta-hover: var(--terracotta-hover);
+  --color-text-deep: var(--text-deep);
+  --color-text-muted: var(--text-muted);
+  --color-border-soft: var(--border-soft);
+  --font-sans: var(--font-sans);
+  --font-serif: var(--font-serif);
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--cream);
+  color: var(--text-deep);
+  font-family: var(--font-sans), system-ui, sans-serif;
+}
+
+@keyframes bottle-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes progress-slide {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(400%);
+  }
+}
+
+.bottle-in {
+  animation: bottle-in 280ms ease-out both;
+}
+
+.progress-bar {
+  animation: progress-slide 1.4s ease-in-out infinite;
 }
