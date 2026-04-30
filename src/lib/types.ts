@@ -13,6 +13,7 @@ export type Wine = {
   color: string | null;
   tasting_notes: string | null;
   price_range: string | null;
+  price_source: string | null;
   food_pairings: string | null;
   drinking_window: string | null;
   extra_notes: string | null;

@@ -24,6 +24,7 @@ type AiWine = {
   color: AllowedColor | null;
   tasting_notes: string | null;
   price_range: string | null;
+  price_source: string | null;
   food_pairings: string | null;
   drinking_window: string | null;
   extra_notes: string | null;
@@ -40,6 +41,7 @@ const FALLBACK: AiWine = {
   color: null,
   tasting_notes: null,
   price_range: null,
+  price_source: null,
   food_pairings: null,
   drinking_window: null,
   extra_notes: null,
@@ -89,7 +91,13 @@ const RECORD_WINE_TOOL: Anthropic.Tool = {
       },
       price_range: {
         type: ["string", "null"],
-        description: "Typical retail price range, e.g. '$20-30'.",
+        description:
+          "Single retail price in ILS shekels, e.g. '₪150'. No ranges. No USD.",
+      },
+      price_source: {
+        type: ["string", "null"],
+        description:
+          "Short human-readable name of the website the price was sourced from (e.g. 'דרך היין', 'Mano Vino', 'Tzora Vineyards', 'Vivino'). Not a URL. Null if no price was found.",
       },
       food_pairings: {
         type: ["string", "null"],
@@ -119,6 +127,7 @@ const RECORD_WINE_TOOL: Anthropic.Tool = {
       "color",
       "tasting_notes",
       "price_range",
+      "price_source",
       "food_pairings",
       "drinking_window",
       "extra_notes",
@@ -130,24 +139,72 @@ const RECORD_WINE_TOOL: Anthropic.Tool = {
 const WEB_SEARCH_TOOL = {
   type: "web_search_20260209",
   name: "web_search",
-  max_uses: 5,
+  max_uses: 3,
   allowed_callers: ["direct"],
 } as const;
 
-const SYSTEM_PROMPT = `You are a wine expert. The user will send a photo of a wine label. Identify the wine from the label, then use the web_search tool to look up additional details (producer, region, vintage notes, grape variety, tasting notes, price range, food pairings, drinking window) AND a clean product photograph of the bottle. Once you have what you can find, call the record_wine tool exactly once with the structured result. If you cannot identify the wine at all, call record_wine with name="Unknown wine" and every other field set to null.
+const WEB_FETCH_TOOL = {
+  type: "web_fetch_20250910",
+  name: "web_fetch",
+  max_uses: 2,
+  allowed_callers: ["direct"],
+  allowed_domains: [
+    "wineroute.co.il",
+    "manovino.co.il",
+    "pelter.co.il",
+    "en.pelter.co.il",
+    "avibenwine.com",
+    "israelwineshop.com",
+    "vivino.com",
+    "wine-searcher.com",
+  ],
+} as const;
+
+const SYSTEM_PROMPT = `You are a wine expert. The user will send a photo of a wine label. Identify the wine from the label, then use the web_search tool to look up additional details (producer, region, vintage notes, grape variety, tasting notes, price range, food pairings, drinking window) AND a clean product photograph of the bottle. Once you have what you can find, call the record_wine tool exactly once with the structured result.
+
+STEP 0 — LABEL READING (mandatory, before any search):
+Before any web_search, transcribe out loud — in a plain text block in your reasoning, BEFORE you call any tool — every word you can clearly read on the label:
+  - Winery name
+  - Wine name / cuvée
+  - Vintage year (if visible)
+  - Region / appellation
+  - Grape variety (if printed)
+  - Any other distinctive text
+If a word is partially obscured, write "unclear: <best guess>" rather than confidently transcribing.
+If you cannot read enough of the label to identify the wine with confidence, call record_wine with:
+  name: "Unknown wine - label unclear"
+  all other fields: null
+Do NOT guess. Do NOT search for a wine you haven't actually read on the label.
 
 You MUST follow these rules:
 
-1. CURRENCY — Israeli Shekels only.
-   - The price_range field MUST be in Israeli Shekels (ILS), formatted with the ₪ symbol. Examples: "₪150", "₪250-350".
-   - Never use $, USD, EUR, GBP, or any other currency symbol or code anywhere in the output. If a source quotes a non-ILS price, convert it to ILS using a recent approximate exchange rate before returning.
+1. PRICE WORKFLOW — TIERED FALLBACK (do not return null without trying all tiers).
+   You have access to BOTH web_search and web_fetch. Use web_search to find candidate retailer pages, then USE web_fetch to read the page and extract the actual price.
 
-2. PRIMARY PRICE SOURCE — Israeli retailers, wineroute.co.il first.
-   - When searching for pricing, search "wineroute.co.il" first (this is דרך היין / The Wine Route, an Israeli wine retailer chain). If a price is listed there, use it for price_range.
-   - If not found on wineroute.co.il, fall back to other Israeli wine retailer sites, then general web search — but always output the price in ILS/₪.
-   - In extra_notes, briefly note where the price came from (e.g. "Price from דרך היין" or "Price from another Israeli retailer" or "Price converted from USD via general web search").
+   Tier 1 — Israeli retailer (preferred):
+     1. Search Israeli wine retailers (wineroute.co.il, manovino.co.il, pelter.co.il, en.pelter.co.il, avibenwine.com, israelwineshop.com, the producer's official site).
+     2. If a relevant URL is found, USE web_fetch to read the page and extract the price.
+     3. Format: "₪150" — single value, no decimals, no ranges, no "from", no commas in the number.
+     4. price_source: short retailer name in Hebrew or English (e.g. "דרך היין", "מנו וינו", "Pelter", "Avi Ben").
 
-3. KOSHER-FRIENDLY FOOD PAIRINGS — the user keeps kosher.
+   Tier 2 — International retail with conversion (fallback):
+     If no Israeli price found after Tier 1, use an international price from Vivino, Wine-Searcher, Decanter, Wine Enthusiast, or the producer site. Use web_fetch on the source page when possible.
+     - Convert to ILS at ~3.7 ILS per USD, ~4.0 ILS per EUR, ~4.6 ILS per GBP.
+     - Prefix with "~" to mark as estimate: "~₪130".
+     - price_source: "estimated from international retail".
+
+   Tier 3 — Style-typical estimate (last resort):
+     If no specific price found anywhere, estimate based on similar wines from the same producer / region / style at Israeli market levels.
+     - Prefix with "~": "~₪90".
+     - price_source: "estimated".
+
+   Currency rule (applies to all tiers): the price_range field MUST start with "₪" (optionally preceded by "~"). NEVER use $, USD, EUR, GBP, or any other currency symbol or code in the output. Single value only — never a range like "₪150-180".
+
+   Return null for price_range ONLY if you genuinely cannot make any reasonable estimate (extremely rare; should be near-zero for any commercially-existing wine). If you do return null, also set price_source to null.
+
+   Do not duplicate the source in extra_notes — price_source is the single source of truth for that.
+
+2. KOSHER-FRIENDLY FOOD PAIRINGS — the user keeps kosher.
    The food_pairings field MUST EXCLUDE:
      - Pork and pork products (bacon, prosciutto, ham, chorizo, pancetta, etc.)
      - Shellfish and crustaceans (shrimp, lobster, crab, oysters, mussels, clams, scallops, etc.)
@@ -155,12 +212,24 @@ You MUST follow these rules:
      - Any combination of meat and dairy (no "ribeye with blue cheese", no "lamb with yogurt sauce", no cream-based sauces on meat dishes, etc.) — meat dishes get non-dairy accompaniments only.
    Use kosher-appropriate alternatives instead: beef, lamb, poultry, fish with fins and scales (salmon, tuna, sea bass, branzino, etc.), pasta, grains, legumes, vegetables. Hard cheeses are fine with non-meat dishes (pasta, vegetables, fruit).
 
-4. PRODUCT IMAGE — find a clean bottle shot.
-   - Use web_search to find a product photograph of the bottle for the product_image_url field.
-   - The image MUST show the full bottle on a clean white or neutral background — a professional product/retailer shot, NOT a closeup of just the label, NOT a lifestyle/restaurant photo, NOT a vineyard scene.
-   - Prefer, in order: the producer's official website, wineroute.co.il, vivino.com, then other reputable wine retailers.
-   - Return the direct URL to the image file (the image source URL, not the page URL).
-   - If you cannot confidently find a clean product shot of THIS exact wine (matching producer, name, and ideally vintage), return null. Do not guess, do not substitute a generic wine image, and do not return a label closeup.`;
+3. PRODUCT IMAGE — REQUIRED MULTI-SEARCH.
+   You MUST attempt at least 4 distinct web searches before giving up on product_image_url:
+     1. "[producer] [wine name] [vintage] bottle png"
+     2. "[wine name] [vintage] site:vivino.com"
+     3. "[wine name] site:wineroute.co.il OR site:manovino.co.il"
+     4. "[producer] official site [wine name]"
+   The URL you return must:
+     - Start with https://
+     - End with .jpg, .jpeg, .png, or .webp (the URL itself, not the hosting page).
+     - Show ONLY the bottle on a clean white or neutral solid background. NO hands, people, food, vineyards, store shelves, restaurants, wine glasses, or scene clutter.
+     - NOT be a closeup of just the label.
+     - NOT come from supabase.co/storage (that is the user upload).
+   If after 4 searches no URL meets ALL criteria, return null. Better to return null than a wrong/messy image.
+
+4. PLAIN TEXT ONLY — no citations, no HTML.
+   - CRITICAL: Do NOT include any XML-style citation markers (e.g. <cite index=...>...</cite>), source references, footnote markers, or HTML/XML tags of any kind in any field of the record_wine tool input.
+   - Provide plain text only. If your search results contain citation markers wrapping text, strip the markers and use only the underlying text.
+   - This applies to every text field: name, producer, region, country, grape, tasting_notes, price_range, food_pairings, drinking_window, extra_notes.`;
 
 function safeExt(name: string, fallback = "jpg"): string {
   const m = /\.([a-zA-Z0-9]{1,5})$/.exec(name);
@@ -186,8 +255,11 @@ function coerceVintage(v: unknown): number | null {
 
 function coerceString(v: unknown): string | null {
   if (typeof v !== "string") return null;
-  const t = v.trim();
-  return t === "" ? null : t;
+  const cleaned = v
+    .replace(/<\/?[^>]+>/g, "")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
+  return cleaned === "" ? null : cleaned;
 }
 
 function coerceUrl(v: unknown): string | null {
@@ -200,6 +272,43 @@ function coerceUrl(v: unknown): string | null {
   } catch {
     return null;
   }
+}
+
+function coerceProductImageUrl(v: unknown): string | null {
+  const s = coerceString(v);
+  if (!s) return null;
+  if (s.length < 20) {
+    console.warn(
+      `[wine-id] product_image_url rejected: too short (${s.length} chars): ${s}`,
+    );
+    return null;
+  }
+  if (s.toLowerCase().includes("supabase.co/storage")) {
+    console.warn(
+      `[wine-id] product_image_url rejected: supabase storage URL (user upload): ${s}`,
+    );
+    return null;
+  }
+  let u: URL;
+  try {
+    u = new URL(s);
+  } catch {
+    console.warn(`[wine-id] product_image_url rejected: invalid URL: ${s}`);
+    return null;
+  }
+  if (u.protocol !== "https:") {
+    console.warn(
+      `[wine-id] product_image_url rejected: not https (protocol=${u.protocol}): ${s}`,
+    );
+    return null;
+  }
+  if (!/\.(jpg|jpeg|png|webp|gif)$/i.test(u.pathname)) {
+    console.warn(
+      `[wine-id] product_image_url rejected: not image extension (pathname=${u.pathname}): ${s}`,
+    );
+    return null;
+  }
+  return u.toString();
 }
 
 function normalizeAi(raw: unknown): AiWine {
@@ -216,10 +325,11 @@ function normalizeAi(raw: unknown): AiWine {
     color: coerceColor(o.color),
     tasting_notes: coerceString(o.tasting_notes),
     price_range: coerceString(o.price_range),
+    price_source: coerceString(o.price_source),
     food_pairings: coerceString(o.food_pairings),
     drinking_window: coerceString(o.drinking_window),
     extra_notes: coerceString(o.extra_notes),
-    product_image_url: coerceUrl(o.product_image_url),
+    product_image_url: coerceProductImageUrl(o.product_image_url),
   };
 }
 
@@ -273,6 +383,7 @@ async function identifyWine(
       system: SYSTEM_PROMPT,
       tools: [
         WEB_SEARCH_TOOL as unknown as Anthropic.ToolUnion,
+        WEB_FETCH_TOOL as unknown as Anthropic.ToolUnion,
         RECORD_WINE_TOOL,
       ],
       tool_choice: { type: "auto" },
@@ -298,9 +409,129 @@ async function identifyWine(
     }),
   );
 
+  try {
+    console.log(
+      "[wine-id] raw response:",
+      JSON.stringify(response, null, 2),
+    );
+  } catch {
+    console.log("[wine-id] raw response (unserializable):", response);
+  }
+
+  let webSearchCount = 0;
+  let webSearchResultCount = 0;
+  let webFetchCount = 0;
+  let webFetchResultCount = 0;
+  let ocrTranscript: string | null = null;
+  let firstToolSeen = false;
+  for (const rawBlock of response.content) {
+    const block = rawBlock as unknown as Record<string, unknown>;
+    const blockType = block.type as string | undefined;
+    if (
+      blockType === "text" &&
+      !firstToolSeen &&
+      ocrTranscript === null &&
+      typeof block.text === "string"
+    ) {
+      ocrTranscript = block.text as string;
+    }
+    if (
+      blockType === "server_tool_use" ||
+      blockType === "tool_use"
+    ) {
+      firstToolSeen = true;
+    }
+    if (blockType === "server_tool_use" && block.name === "web_search") {
+      webSearchCount++;
+      const input = block.input as { query?: unknown } | undefined;
+      const query = typeof input?.query === "string" ? input.query : "(unknown)";
+      console.log(`[wine-id] web_search query #${webSearchCount}:`, query);
+    } else if (blockType === "web_search_tool_result") {
+      const content = block.content;
+      const count = Array.isArray(content) ? content.length : 0;
+      webSearchResultCount++;
+      const errorType =
+        content && typeof content === "object" && !Array.isArray(content)
+          ? (content as { type?: unknown }).type
+          : undefined;
+      if (errorType && errorType !== "web_search_tool_result") {
+        console.warn(
+          `[wine-id] web_search result #${webSearchResultCount}: error type=${String(errorType)}`,
+          content,
+        );
+      } else {
+        console.log(
+          `[wine-id] web_search result #${webSearchResultCount}: ${count} hits`,
+        );
+      }
+    } else if (blockType === "server_tool_use" && block.name === "web_fetch") {
+      webFetchCount++;
+      const input = block.input as { url?: unknown } | undefined;
+      const url = typeof input?.url === "string" ? input.url : "(unknown)";
+      console.log(`[wine-id] web_fetch URL #${webFetchCount}:`, url);
+    } else if (blockType === "web_fetch_tool_result") {
+      webFetchResultCount++;
+      const content = block.content as Record<string, unknown> | undefined;
+      const errType = content && typeof content === "object" ? (content.type as string | undefined) : undefined;
+      if (errType === "web_fetch_tool_error") {
+        const code = (content as { error_code?: unknown })?.error_code;
+        console.warn(
+          `[wine-id] web_fetch result #${webFetchResultCount}: error code=${String(code)}`,
+        );
+      } else {
+        const inner = (content as { content?: unknown })?.content as
+          | Record<string, unknown>
+          | undefined;
+        const source = inner?.source as Record<string, unknown> | undefined;
+        const data = source?.data;
+        const len = typeof data === "string" ? data.length : 0;
+        console.log(
+          `[wine-id] web_fetch response #${webFetchResultCount}: ${len} chars`,
+        );
+      }
+    }
+  }
+  console.log(
+    `[wine-id] tool summary: ${webSearchCount} web_search queries (${webSearchResultCount} results), ${webFetchCount} web_fetch URLs (${webFetchResultCount} results)`,
+  );
+  console.log(
+    "[wine-id] OCR transcript:",
+    ocrTranscript ?? "(none)",
+  );
+
   for (const block of response.content) {
     if (block.type === "tool_use" && block.name === "record_wine") {
-      return normalizeAi(block.input);
+      const parsed = block.input;
+      console.log("[wine-id] AI parsed:", parsed);
+      const normalized = normalizeAi(parsed);
+      console.log("[wine-id] AI normalized:", normalized);
+
+      const confidence = normalized.name.toLowerCase().startsWith("unknown wine")
+        ? "low"
+        : "high";
+      console.log(`[wine-id] confidence: ${confidence}`);
+
+      const price = normalized.price_range;
+      const source = normalized.price_source;
+      if (price === null) {
+        console.warn(
+          "[wine-id] price tier used: NONE (price_range=null) — should be rare",
+        );
+      } else if (price.startsWith("~")) {
+        const tier =
+          source && source.toLowerCase().includes("international") ? 2 : 3;
+        const label =
+          tier === 2 ? "international with conversion" : "style-typical estimate";
+        console.log(
+          `[wine-id] price tier used: ${tier} (${label}) — ${price} from ${source ?? "(no source)"}`,
+        );
+      } else {
+        console.log(
+          `[wine-id] price tier used: 1 (Israeli retailer) — ${price} from ${source ?? "(no source)"}`,
+        );
+      }
+
+      return normalized;
     }
   }
 
@@ -333,30 +564,46 @@ export async function addBottleFromPhoto(
   const contentType = file.type || "image/jpeg";
 
   const buffer = await file.arrayBuffer();
-
-  const { error: upErr } = await sb.storage
-    .from(BUCKET)
-    .upload(path, buffer, { contentType, upsert: false });
-  if (upErr) {
-    return { ok: false, error: `Image upload failed: ${upErr.message}` };
-  }
-
-  const { data: pub } = sb.storage.from(BUCKET).getPublicUrl(path);
-  const labelUrl = pub.publicUrl;
-
   const base64 = Buffer.from(buffer).toString("base64");
 
-  let ai: AiWine;
-  try {
-    ai = await identifyWine(base64, contentType);
-  } catch (err) {
-    console.error("[wine-id] Identification failed after retries:", err);
+  const uploadPromise = (async () => {
+    const { error } = await sb.storage
+      .from(BUCKET)
+      .upload(path, buffer, { contentType, upsert: false });
+    if (error) throw error;
+    const { data: pub } = sb.storage.from(BUCKET).getPublicUrl(path);
+    return pub.publicUrl;
+  })();
+
+  const identifyPromise = identifyWine(base64, contentType);
+
+  const [uploadResult, identifyResult] = await Promise.allSettled([
+    uploadPromise,
+    identifyPromise,
+  ]);
+
+  if (uploadResult.status === "rejected") {
+    const reason = uploadResult.reason;
+    const msg =
+      reason && typeof reason === "object" && "message" in reason
+        ? String((reason as { message: unknown }).message)
+        : String(reason);
+    return { ok: false, error: `Image upload failed: ${msg}` };
+  }
+  const labelUrl = uploadResult.value;
+
+  if (identifyResult.status === "rejected") {
+    console.error(
+      "[wine-id] Identification failed after retries:",
+      identifyResult.reason,
+    );
     await sb.storage.from(BUCKET).remove([path]);
     return {
       ok: false,
       error: "AI service is temporarily busy. Please try again in a minute.",
     };
   }
+  const ai: AiWine = identifyResult.value;
 
   const { error: insErr } = await sb.from("wines").insert({
     name: ai.name,
@@ -368,6 +615,7 @@ export async function addBottleFromPhoto(
     color: ai.color,
     tasting_notes: ai.tasting_notes,
     price_range: ai.price_range,
+    price_source: ai.price_source,
     food_pairings: ai.food_pairings,
     drinking_window: ai.drinking_window,
     extra_notes: ai.extra_notes,
@@ -397,6 +645,7 @@ const UPDATABLE_FIELDS = [
   "color",
   "tasting_notes",
   "price_range",
+  "price_source",
   "food_pairings",
   "drinking_window",
   "extra_notes",
@@ -416,6 +665,7 @@ export type WineUpdate = Partial<{
   color: AllowedColor | null;
   tasting_notes: string | null;
   price_range: string | null;
+  price_source: string | null;
   food_pairings: string | null;
   drinking_window: string | null;
   extra_notes: string | null;

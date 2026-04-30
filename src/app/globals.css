@@ -1,20 +1,23 @@
 @import "tailwindcss";
 
 :root {
-  --cream: #fdf6e8;
-  --cream-card: #fbf0d9;
-  --walnut-dark: #3d2817;
-  --walnut-mid: #5c3a22;
-  --walnut-deep: #2a1810;
-  --cabinet: #1f1408;
-  --amber-glow: rgba(244, 184, 96, 0.08);
-  --brass: #b8893d;
-  --brass-light: #d9a85a;
+  --cream: #faf6ef;
+  --cream-card: #ffffff;
+  --surface-subtle: #f5efe4;
+  --cabinet-frame: #ede4d1;
+  --cabinet-frame-border: #d9cdb6;
+  --cabinet-interior: #ffffff;
+  --shelf-line: #c9bda5;
+  --shadow-warm: rgba(60, 40, 20, 0.06);
+  --shadow-warm-strong: rgba(60, 40, 20, 0.12);
+
+  --text-deep: #1f1612;
+  --text-muted: #7a6f60;
+  --border-soft: #e8ddc8;
+
   --terracotta: #c8553d;
   --terracotta-hover: #a8412e;
-  --text-deep: #2a1810;
-  --text-muted: #6b5544;
-  --border-soft: #e8d9b8;
+  --gold: #c9a14a;
 
   --background: var(--cream);
   --foreground: var(--text-deep);
@@ -25,17 +28,17 @@
   --color-foreground: var(--foreground);
   --color-cream: var(--cream);
   --color-cream-card: var(--cream-card);
-  --color-walnut-dark: var(--walnut-dark);
-  --color-walnut-mid: var(--walnut-mid);
-  --color-walnut-deep: var(--walnut-deep);
-  --color-cabinet: var(--cabinet);
-  --color-brass: var(--brass);
-  --color-brass-light: var(--brass-light);
-  --color-terracotta: var(--terracotta);
-  --color-terracotta-hover: var(--terracotta-hover);
+  --color-surface-subtle: var(--surface-subtle);
+  --color-cabinet-frame: var(--cabinet-frame);
+  --color-cabinet-frame-border: var(--cabinet-frame-border);
+  --color-cabinet-interior: var(--cabinet-interior);
+  --color-shelf-line: var(--shelf-line);
   --color-text-deep: var(--text-deep);
   --color-text-muted: var(--text-muted);
   --color-border-soft: var(--border-soft);
+  --color-terracotta: var(--terracotta);
+  --color-terracotta-hover: var(--terracotta-hover);
+  --color-gold: var(--gold);
   --font-sans: var(--font-sans);
   --font-serif: var(--font-serif);
 }
@@ -72,4 +75,8 @@ body {
 
 .progress-bar {
   animation: progress-slide 1.4s ease-in-out infinite;
+}
+
+.safe-pb {
+  padding-bottom: calc(2.25rem + env(safe-area-inset-bottom));
 }

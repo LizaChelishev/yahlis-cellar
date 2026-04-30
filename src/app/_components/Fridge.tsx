@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { useRouter } from "next/navigation";
 import { SHELVES, SLOTS_PER_SHELF } from "@/lib/fridge";
 import type { Wine, WineColor } from "@/lib/types";
@@ -11,20 +12,12 @@ import {
   type WineUpdate,
 } from "../actions";
 
-const COLOR_FILL: Record<string, string> = {
-  red: "#5a1521",
-  white: "#c4b260",
-  rose: "#d99ba3",
-  sparkling: "#3d3520",
-  unknown: "#6b5544",
-};
-
 const COLOR_DOT: Record<string, string> = {
-  red: "#5a1521",
-  white: "#c4b260",
-  rose: "#d99ba3",
-  sparkling: "#3d3520",
-  unknown: "#6b5544",
+  red: "#7a1f2b",
+  white: "#d8c373",
+  rose: "#e0a4ad",
+  sparkling: "#d4b97a",
+  unknown: "#b8ad96",
 };
 
 const COLOR_LABEL: Record<string, string> = {
@@ -37,20 +30,15 @@ const COLOR_LABEL: Record<string, string> = {
 const COLOR_OPTIONS: WineColor[] = ["red", "white", "rose", "sparkling"];
 
 const INPUT_CLASS =
-  "w-full rounded-lg bg-cream border border-border-soft px-3 py-2 text-sm text-text-deep placeholder:text-text-muted/60 focus:outline-none focus:ring-2 focus:ring-terracotta/40 focus:border-terracotta transition-[border,box-shadow] duration-150 ease-out";
+  "w-full rounded-lg bg-white border border-border-soft px-3 py-2 text-sm text-text-deep placeholder:text-text-muted/60 focus:outline-none focus:ring-2 focus:ring-terracotta/40 focus:border-terracotta transition-[border,box-shadow] duration-150 ease-out";
 
-const FIELD_LABEL_CLASS =
-  "text-[10px] font-semibold uppercase tracking-[0.12em] text-text-muted";
-
-function colorFill(color: string | null) {
-  if (!color) return COLOR_FILL.unknown;
-  return COLOR_FILL[color] ?? COLOR_FILL.unknown;
-}
+const LABEL_CAPS_CLASS =
+  "text-[10px] font-semibold uppercase tracking-[0.16em] text-text-muted";
 
 async function downscaleImage(
   file: File,
-  maxDim = 1600,
-  quality = 0.82,
+  maxDim = 2400,
+  quality = 0.88,
 ): Promise<File> {
   const url = URL.createObjectURL(file);
   try {
@@ -83,6 +71,32 @@ async function downscaleImage(
   }
 }
 
+function bottleTint(color: string | null): string {
+  return COLOR_DOT[color ?? "unknown"] ?? COLOR_DOT.unknown;
+}
+
+function BottleSilhouette({
+  tint,
+  className = "",
+}: {
+  tint: string;
+  className?: string;
+}) {
+  return (
+    <svg
+      viewBox="0 0 24 80"
+      className={className}
+      preserveAspectRatio="xMidYMid meet"
+      aria-hidden="true"
+    >
+      <path
+        fill={tint}
+        d="M10 2 h4 v14 c0 1 0.6 2 1.4 3 C17 22 19 25 19 30 V70 c0 4 -2 6 -6 6 h-2 c-4 0 -6 -2 -6 -6 V30 c0 -5 2 -8 3.6 -11 c0.8 -1 1.4 -2 1.4 -3 z"
+      />
+    </svg>
+  );
+}
+
 function WineGlassIcon({ className = "" }: { className?: string }) {
   return (
     <svg
@@ -102,6 +116,68 @@ function WineGlassIcon({ className = "" }: { className?: string }) {
   );
 }
 
+function CameraIcon({ className = "" }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <rect x="3" y="6" width="18" height="14" rx="2" />
+      <circle cx="12" cy="13" r="4" />
+      <path d="M8 6l1.5-2h5L16 6" />
+    </svg>
+  );
+}
+
+function Spinner({ className = "w-3.5 h-3.5" }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      className={`${className} animate-spin`}
+      aria-hidden="true"
+    >
+      <circle
+        cx="12"
+        cy="12"
+        r="9"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2.5"
+        strokeOpacity="0.25"
+      />
+      <path
+        d="M21 12a9 9 0 0 0-9-9"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2.5"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function ProcessingSlot() {
+  return (
+    <div
+      role="status"
+      aria-label="Identifying wine..."
+      className="w-full min-w-0 aspect-[1/2.4] rounded-md flex items-center justify-center text-text-muted"
+      style={{
+        background: "#ffffff",
+        border: "1px dashed var(--cabinet-frame-border)",
+      }}
+    >
+      <Spinner className="w-5 h-5 pointer-events-none" />
+    </div>
+  );
+}
+
 type ModalState =
   | { kind: "none" }
   | { kind: "view"; wine: Wine }
@@ -112,6 +188,8 @@ export default function Fridge({ wines }: { wines: Wine[] }) {
   const [modal, setModal] = useState<ModalState>({ kind: "none" });
   const [pending, setPending] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [processing, setProcessing] = useState<Set<string>>(new Set());
+  const [errorToast, setErrorToast] = useState<string | null>(null);
 
   const slotMap = new Map<string, Wine>();
   for (const w of wines) {
@@ -119,6 +197,23 @@ export default function Fridge({ wines }: { wines: Wine[] }) {
       slotMap.set(`${w.shelf}:${w.position}`, w);
     }
   }
+
+  useEffect(() => {
+    setProcessing((prev) => {
+      if (prev.size === 0) return prev;
+      const next = new Set(prev);
+      let changed = false;
+      for (const key of prev) {
+        const [s, p] = key.split("-");
+        if (slotMap.has(`${s}:${p}`)) {
+          next.delete(key);
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wines]);
 
   const filledCount = slotMap.size;
   const colorCounts: Record<string, number> = {};
@@ -134,20 +229,43 @@ export default function Fridge({ wines }: { wines: Wine[] }) {
   }
 
   async function handleAdd(fd: FormData) {
-    setErrorMsg(null);
-    setPending(true);
+    const shelf = fd.get("shelf");
+    const position = fd.get("position");
+    const slotKey = `${String(shelf)}-${String(position)}`;
+
+    setErrorToast(null);
+    setProcessing((prev) => {
+      const next = new Set(prev);
+      next.add(slotKey);
+      return next;
+    });
+
+    flushSync(() => {
+      setModal({ kind: "none" });
+    });
+
     try {
       const res = await addBottleFromPhoto(fd);
       if (res.ok) {
-        setModal({ kind: "none" });
         router.refresh();
+        // useEffect on `wines` clears slotKey from `processing` once the row arrives.
       } else {
-        setErrorMsg(res.error);
+        setProcessing((prev) => {
+          const next = new Set(prev);
+          next.delete(slotKey);
+          return next;
+        });
+        setErrorToast(res.error || "Couldn't identify wine — try again");
       }
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : String(err));
-    } finally {
-      setPending(false);
+      setProcessing((prev) => {
+        const next = new Set(prev);
+        next.delete(slotKey);
+        return next;
+      });
+      setErrorToast(
+        err instanceof Error ? err.message : "Couldn't identify wine — try again",
+      );
     }
   }
 
@@ -157,7 +275,10 @@ export default function Fridge({ wines }: { wines: Wine[] }) {
     try {
       const res = await updateWine(id, fields);
       if (res.ok) {
-        setModal({ kind: "none" });
+        flushSync(() => {
+          setModal({ kind: "none" });
+          setPending(false);
+        });
         router.refresh();
       } else {
         setErrorMsg(res.error);
@@ -174,7 +295,10 @@ export default function Fridge({ wines }: { wines: Wine[] }) {
     setPending(true);
     try {
       await deleteWine(id);
-      setModal({ kind: "none" });
+      flushSync(() => {
+        setModal({ kind: "none" });
+        setPending(false);
+      });
       router.refresh();
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
@@ -184,76 +308,84 @@ export default function Fridge({ wines }: { wines: Wine[] }) {
   }
 
   return (
-    <div className="w-full flex flex-col items-center gap-6">
+    <div className="w-full flex flex-col items-center gap-5 sm:gap-6">
+      {errorToast && (
+        <div
+          className="w-full rounded-lg px-4 py-2.5 flex items-center justify-between text-sm"
+          style={{
+            background: "rgba(200, 85, 61, 0.08)",
+            border: "1px solid rgba(200, 85, 61, 0.3)",
+            color: "var(--terracotta-hover)",
+          }}
+          role="alert"
+        >
+          <span>{errorToast}</span>
+          <button
+            type="button"
+            onClick={() => setErrorToast(null)}
+            className="text-text-muted hover:text-text-deep ml-3 text-xs px-2 py-1"
+            aria-label="Dismiss"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
+      {/* Plaque (outside cabinet) */}
+      <div className={`${LABEL_CAPS_CLASS} -mb-1`}>Cellar</div>
+
       {/* Cabinet */}
       <div
         className="w-full rounded-2xl p-3 sm:p-4"
         style={{
-          background:
-            "linear-gradient(180deg, #5c3a22 0%, #3d2817 55%, #2a1810 100%)",
-          boxShadow:
-            "0 22px 40px -18px rgba(42, 24, 16, 0.45), 0 2px 0 rgba(255, 255, 255, 0.04) inset",
+          background: "var(--cabinet-frame)",
+          border: "1px solid var(--cabinet-frame-border)",
+          boxShadow: "0 12px 28px -16px var(--shadow-warm-strong)",
         }}
       >
         <div
-          className="relative rounded-xl px-2 sm:px-3 py-3 sm:py-4"
-          style={{
-            background: "#1f1408",
-            backgroundImage:
-              "radial-gradient(120% 60% at 50% 0%, rgba(244, 184, 96, 0.08) 0%, rgba(244, 184, 96, 0) 60%)",
-            boxShadow:
-              "inset 0 8px 24px rgba(0, 0, 0, 0.55), inset 0 -2px 6px rgba(0, 0, 0, 0.4)",
-          }}
+          className="rounded-xl px-2 sm:px-3 py-3 sm:py-4"
+          style={{ background: "var(--cabinet-interior)" }}
         >
-          {/* Brass plaque */}
-          <div className="flex justify-center pt-1 pb-3">
-            <div
-              className="px-3 py-1 rounded-sm text-[10px] font-bold tracking-[0.32em]"
-              style={{
-                background:
-                  "linear-gradient(180deg, #d9a85a 0%, #b8893d 55%, #8a6529 100%)",
-                color: "#2a1810",
-                boxShadow:
-                  "0 1px 0 rgba(255, 255, 255, 0.25) inset, 0 1px 2px rgba(0, 0, 0, 0.5)",
-              }}
-            >
-              CELLAR
-            </div>
-          </div>
-
-          <div className="flex flex-col gap-0">
+          <div className="flex flex-col">
             {Array.from({ length: SHELVES }).map((_, shelfIdx) => {
               const shelf = shelfIdx + 1;
               const isLast = shelfIdx === SHELVES - 1;
               return (
                 <div key={shelf} className="flex flex-col">
-                  <div className="grid grid-cols-4 gap-1.5 sm:gap-2 px-1 pb-2.5">
+                  <div
+                    className="grid gap-1.5 sm:gap-2 px-1 pb-2.5"
+                    style={{
+                      gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+                    }}
+                  >
                     {Array.from({ length: SLOTS_PER_SHELF }).map((_, posIdx) => {
                       const position = posIdx + 1;
                       const wine = slotMap.get(`${shelf}:${position}`);
+                      const isProcessing = processing.has(`${shelf}-${position}`);
                       return (
-                        <Slot
-                          key={position}
-                          wine={wine}
-                          onClick={() => {
-                            if (wine) {
-                              setModal({ kind: "view", wine });
-                            } else {
-                              setModal({ kind: "add", shelf, position });
-                            }
-                          }}
-                        />
+                        <div key={position} className="min-w-0 w-full">
+                          <Slot
+                            wine={wine}
+                            processing={isProcessing}
+                            shelf={shelf}
+                            position={position}
+                            onClick={() => {
+                              if (wine) {
+                                setModal({ kind: "view", wine });
+                              } else if (!isProcessing) {
+                                setModal({ kind: "add", shelf, position });
+                              }
+                            }}
+                          />
+                        </div>
                       );
                     })}
                   </div>
                   {!isLast && (
                     <div
                       className="h-px mx-1 mb-2.5"
-                      style={{
-                        background:
-                          "linear-gradient(90deg, rgba(184, 137, 61, 0) 0%, rgba(184, 137, 61, 0.7) 20%, rgba(217, 168, 90, 0.9) 50%, rgba(184, 137, 61, 0.7) 80%, rgba(184, 137, 61, 0) 100%)",
-                        boxShadow: "0 2px 4px rgba(0, 0, 0, 0.55)",
-                      }}
+                      style={{ background: "var(--shelf-line)" }}
                     />
                   )}
                 </div>
@@ -265,11 +397,11 @@ export default function Fridge({ wines }: { wines: Wine[] }) {
 
       {/* Stats */}
       <div
-        className="w-full rounded-xl px-5 py-4 sm:px-6 sm:py-5 flex flex-wrap items-center justify-between gap-4"
+        className="w-full rounded-xl px-5 py-5 sm:px-7 sm:py-6 flex flex-wrap items-center justify-between gap-4"
         style={{
-          background: "var(--cream-card)",
-          borderBottom: "2px solid var(--terracotta)",
-          boxShadow: "0 4px 18px -8px rgba(42, 24, 16, 0.18)",
+          background: "#ffffff",
+          border: "1px solid var(--border-soft)",
+          boxShadow: "0 4px 18px -10px var(--shadow-warm)",
         }}
       >
         <div className="flex items-baseline gap-2">
@@ -277,14 +409,9 @@ export default function Fridge({ wines }: { wines: Wine[] }) {
             className="text-3xl sm:text-4xl text-text-deep"
             style={{ fontFamily: "var(--font-serif)" }}
           >
-            {filledCount}
+            {filledCount} <span className="text-text-muted">/ 28</span>
           </span>
-          <span
-            className="italic text-sm sm:text-base text-text-muted"
-            style={{ fontFamily: "var(--font-serif)" }}
-          >
-            of 28 bottles
-          </span>
+          <span className="text-sm text-text-muted">bottles</span>
         </div>
         {filledCount > 0 && (
           <div className="flex flex-wrap gap-3 text-xs text-text-muted">
@@ -294,7 +421,6 @@ export default function Fridge({ wines }: { wines: Wine[] }) {
                   className="inline-block w-2.5 h-2.5 rounded-full"
                   style={{
                     backgroundColor: COLOR_DOT[color] ?? COLOR_DOT.unknown,
-                    boxShadow: "0 0 0 1px rgba(42, 24, 16, 0.08)",
                   }}
                 />
                 <span className="font-medium text-text-deep">{count}</span>
@@ -319,12 +445,10 @@ export default function Fridge({ wines }: { wines: Wine[] }) {
       )}
 
       {modal.kind === "add" && (
-        <Modal onClose={close} progress={pending}>
+        <Modal onClose={close}>
           <AddPhotoForm
             shelf={modal.shelf}
             position={modal.position}
-            pending={pending}
-            errorMsg={errorMsg}
             onClose={close}
             onSubmit={handleAdd}
           />
@@ -334,89 +458,165 @@ export default function Fridge({ wines }: { wines: Wine[] }) {
   );
 }
 
-function Slot({ wine, onClick }: { wine: Wine | undefined; onClick: () => void }) {
-  if (wine) {
-    const hasPhoto = !!wine.label_image_url;
-    return (
-      <div className="relative group">
+function SilhouetteSlotContent({
+  tint,
+  name,
+}: {
+  tint: string;
+  name: string;
+}) {
+  return (
+    <div className="w-full h-full flex flex-col items-center justify-center px-1 gap-1 pointer-events-none">
+      <div className="flex-1 min-h-0 w-full flex items-center justify-center pt-1 pointer-events-none">
+        <BottleSilhouette
+          tint={tint}
+          className="h-full max-w-full pointer-events-none"
+        />
+      </div>
+      <span
+        className="italic text-[8px] leading-tight line-clamp-2 text-center text-text-muted pb-1 px-0.5 pointer-events-none"
+        style={{ fontFamily: "var(--font-serif)" }}
+      >
+        {name}
+      </span>
+    </div>
+  );
+}
+
+function ProductSlotContent({
+  src,
+  name,
+  onImgError,
+}: {
+  src: string;
+  name: string;
+  onImgError: () => void;
+}) {
+  return (
+    <div className="w-full h-full flex flex-col items-center justify-center px-1 gap-1 pointer-events-none">
+      <div
+        className="flex-1 min-h-0 w-full flex items-center justify-center pt-1 pointer-events-none"
+        style={{
+          filter:
+            "drop-shadow(0 6px 8px rgba(60, 40, 20, 0.12)) drop-shadow(0 1px 2px rgba(60, 40, 20, 0.08))",
+        }}
+      >
+        <div className="w-full h-full flex items-center justify-center overflow-hidden pointer-events-none">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={src}
+            alt={name}
+            onError={onImgError}
+            className="block w-full h-full object-contain pointer-events-none"
+            style={{ transform: "scale(1.35)", transformOrigin: "center" }}
+          />
+        </div>
+      </div>
+      <span
+        className="italic text-[8px] leading-tight line-clamp-2 text-center text-text-muted pb-1 px-0.5 pointer-events-none"
+        style={{ fontFamily: "var(--font-serif)" }}
+      >
+        {name}
+      </span>
+    </div>
+  );
+}
+
+function FilledSlot({ wine, onClick }: { wine: Wine; onClick: () => void }) {
+  const tint = bottleTint(wine.color);
+  const [imgErrored, setImgErrored] = useState(false);
+  const showImage = !!wine.product_image_url && !imgErrored;
+
+  return (
+    <div className="relative group">
+      <div
+        className="bottle-in relative block w-full min-w-0 aspect-[1/2.4] rounded-md overflow-hidden bg-white transition-transform duration-150 ease-out hover:scale-[1.03]"
+      >
+        {showImage ? (
+          <ProductSlotContent
+            src={wine.product_image_url!}
+            name={wine.name}
+            onImgError={() => setImgErrored(true)}
+          />
+        ) : (
+          <SilhouetteSlotContent tint={tint} name={wine.name} />
+        )}
         <button
           type="button"
           onClick={onClick}
           aria-label={`View ${wine.name}`}
-          className="bottle-in block w-full aspect-[1/2.4] rounded-md overflow-hidden transition-[transform,box-shadow,filter] duration-150 ease-out hover:-translate-y-0.5"
+          className="absolute inset-0 w-full h-full bg-transparent border-0 cursor-pointer z-10"
           style={{
-            border: "1px solid rgba(232, 217, 184, 0.4)",
-            boxShadow: "0 3px 8px -2px rgba(20, 10, 4, 0.55)",
+            WebkitTapHighlightColor: "transparent",
+            touchAction: "manipulation",
           }}
-        >
-          {hasPhoto ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              src={wine.label_image_url!}
-              alt={wine.name}
-              className="block w-full h-full object-cover transition-[filter] duration-150 ease-out group-hover:brightness-110"
-            />
-          ) : (
-            <div
-              className="w-full h-full flex flex-col items-center justify-center px-1 text-center"
-              style={{
-                backgroundColor: colorFill(wine.color),
-                color: "rgba(253, 246, 232, 0.92)",
-              }}
-            >
-              <WineGlassIcon className="w-5 h-5 opacity-80" />
-              <span
-                className="mt-1 text-[8px] leading-tight line-clamp-3 px-0.5"
-                style={{ fontFamily: "var(--font-serif)" }}
-              >
-                {wine.name}
-              </span>
-            </div>
-          )}
-        </button>
-
-        {/* Tooltip — desktop only */}
-        <div
-          role="tooltip"
-          className="hidden sm:block pointer-events-none absolute left-1/2 -translate-x-1/2 -top-2 -translate-y-full z-20 whitespace-nowrap rounded-full px-3 py-1.5 text-xs italic opacity-0 group-hover:opacity-100 transition-opacity duration-150 ease-out"
-          style={{
-            background: "var(--cream-card)",
-            color: "var(--text-deep)",
-            border: "1px solid var(--border-soft)",
-            boxShadow: "0 6px 16px -6px rgba(42, 24, 16, 0.35)",
-            fontFamily: "var(--font-serif)",
-          }}
-        >
-          {wine.name}
-          {wine.region ? <span className="text-text-muted"> · {wine.region}</span> : null}
-        </div>
+        />
       </div>
-    );
+
+      {/* Tooltip — desktop only */}
+      <div
+        role="tooltip"
+        className="hidden sm:block pointer-events-none absolute left-1/2 -translate-x-1/2 -top-2 -translate-y-full z-20 whitespace-nowrap rounded-full px-3 py-1.5 text-xs italic opacity-0 group-hover:opacity-100 transition-opacity duration-150 ease-out"
+        style={{
+          background: "#ffffff",
+          color: "var(--text-deep)",
+          border: "1px solid var(--border-soft)",
+          boxShadow: "0 6px 16px -8px var(--shadow-warm-strong)",
+          fontFamily: "var(--font-serif)",
+        }}
+      >
+        {wine.name}
+        {wine.region ? <span className="text-text-muted"> · {wine.region}</span> : null}
+      </div>
+    </div>
+  );
+}
+
+function Slot({
+  wine,
+  processing,
+  shelf,
+  position,
+  onClick,
+}: {
+  wine: Wine | undefined;
+  processing: boolean;
+  shelf: number;
+  position: number;
+  onClick: () => void;
+}) {
+  if (wine) {
+    return <FilledSlot wine={wine} onClick={onClick} />;
+  }
+  if (processing) {
+    return <ProcessingSlot />;
   }
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-label="Add bottle"
-      className="group w-full aspect-[1/2.4] rounded-md flex items-center justify-center transition-[border-color,background-color,color] duration-150 ease-out"
+    <div
+      className="relative group w-full min-w-0 aspect-[1/2.4] rounded-md flex items-center justify-center transition-colors duration-150 ease-out hover:[--plus-color:var(--terracotta)]"
       style={{
-        border: "1.5px dashed rgba(184, 137, 61, 0.35)",
-        color: "rgba(232, 217, 184, 0.45)",
-        backgroundColor: "transparent",
-      }}
-      onMouseEnter={(e) => {
-        e.currentTarget.style.borderColor = "rgba(244, 184, 96, 0.7)";
-        e.currentTarget.style.backgroundColor = "rgba(244, 184, 96, 0.06)";
-        e.currentTarget.style.color = "rgba(244, 184, 96, 0.9)";
-      }}
-      onMouseLeave={(e) => {
-        e.currentTarget.style.borderColor = "rgba(184, 137, 61, 0.35)";
-        e.currentTarget.style.backgroundColor = "transparent";
-        e.currentTarget.style.color = "rgba(232, 217, 184, 0.45)";
+        background: "#ffffff",
+        border: "1px dashed var(--cabinet-frame-border)",
+        ["--plus-color" as string]: "#c9bda5",
       }}
     >
-      <span className="text-lg leading-none font-light">+</span>
-    </button>
+      <span
+        className="text-base leading-none font-light transition-colors duration-150 ease-out pointer-events-none"
+        style={{ color: "var(--plus-color)" }}
+      >
+        +
+      </span>
+      <button
+        type="button"
+        onClick={onClick}
+        aria-label={`Add bottle to shelf ${shelf}, position ${position}`}
+        className="absolute inset-0 w-full h-full bg-transparent border-0 cursor-pointer z-10"
+        style={{
+          WebkitTapHighlightColor: "transparent",
+          touchAction: "manipulation",
+        }}
+      />
+    </div>
   );
 }
 
@@ -432,20 +632,20 @@ function Modal({
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center sm:p-6"
-      style={{ backgroundColor: "rgba(42, 24, 16, 0.6)" }}
+      style={{ backgroundColor: "rgba(250, 246, 239, 0.8)" }}
       onClick={onClose}
     >
       <div
-        className="relative w-full sm:max-w-md max-h-[100vh] sm:max-h-[90vh] overflow-y-auto rounded-none sm:rounded-xl"
+        className="relative w-full sm:max-w-md max-h-[100dvh] sm:max-h-[90vh] overflow-y-auto rounded-none sm:rounded-2xl"
         style={{
-          background: "var(--cream-card)",
+          background: "#ffffff",
           color: "var(--text-deep)",
-          boxShadow: "0 24px 60px -16px rgba(42, 24, 16, 0.55)",
+          boxShadow: "0 30px 70px -20px rgba(60, 40, 20, 0.25)",
         }}
         onClick={(e) => e.stopPropagation()}
       >
         {progress && (
-          <div className="absolute top-0 left-0 right-0 h-0.5 overflow-hidden rounded-t-xl">
+          <div className="absolute top-0 left-0 right-0 h-0.5 overflow-hidden rounded-t-2xl">
             <div
               className="progress-bar h-full w-1/4"
               style={{ background: "var(--terracotta)" }}
@@ -456,11 +656,11 @@ function Modal({
           type="button"
           onClick={onClose}
           aria-label="Close"
-          className="absolute top-3 right-3 z-10 w-8 h-8 flex items-center justify-center rounded-full text-text-muted hover:text-text-deep hover:bg-cream transition-colors duration-150 ease-out"
+          className="absolute top-3 right-3 z-10 w-9 h-9 flex items-center justify-center rounded-full text-text-muted hover:text-text-deep hover:bg-cream transition-colors duration-150 ease-out"
         >
           <span className="text-base leading-none">✕</span>
         </button>
-        <div className="px-4 sm:px-6 py-6 sm:py-7">{children}</div>
+        {children}
       </div>
     </div>
   );
@@ -469,20 +669,17 @@ function Modal({
 function AddPhotoForm({
   shelf,
   position,
-  pending,
-  errorMsg,
   onClose,
   onSubmit,
 }: {
   shelf: number;
   position: number;
-  pending: boolean;
-  errorMsg: string | null;
   onClose: () => void;
   onSubmit: (fd: FormData) => void;
 }) {
   const [file, setFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -497,7 +694,8 @@ function AddPhotoForm({
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    if (!file || pending) return;
+    if (!file || submitting) return;
+    setSubmitting(true);
     let toUpload: File = file;
     try {
       toUpload = await downscaleImage(file);
@@ -509,21 +707,22 @@ function AddPhotoForm({
     fd.set("shelf", String(shelf));
     fd.set("position", String(position));
     onSubmit(fd);
+    // Parent unmounts the modal immediately after this returns; the form is gone.
   }
 
   return (
-    <form onSubmit={handleSubmit} className="flex flex-col gap-5">
-      <header className="flex flex-col gap-1">
+    <form
+      onSubmit={handleSubmit}
+      className="flex flex-col gap-6 px-5 sm:px-8 pt-7 sm:pt-9 safe-pb"
+    >
+      <header className="flex flex-col gap-1.5 pr-9">
         <h2
-          className="text-2xl sm:text-3xl text-text-deep"
+          className="text-2xl sm:text-3xl text-text-deep leading-tight"
           style={{ fontFamily: "var(--font-serif)" }}
         >
           Add a bottle
         </h2>
-        <p
-          className="italic text-sm text-text-muted"
-          style={{ fontFamily: "var(--font-serif)" }}
-        >
+        <p className={LABEL_CAPS_CLASS}>
           Shelf {shelf} · Slot {position}
         </p>
       </header>
@@ -533,7 +732,7 @@ function AddPhotoForm({
         type="file"
         accept="image/*"
         capture="environment"
-        disabled={pending}
+        disabled={submitting}
         onChange={(e) => setFile(e.target.files?.[0] ?? null)}
         className="sr-only"
         id="wine-photo-input"
@@ -545,18 +744,17 @@ function AddPhotoForm({
           <img
             src={previewUrl}
             alt="Selected wine label"
-            className="w-full max-h-72 object-contain rounded-lg bg-cream"
-            style={{ boxShadow: "0 8px 22px -10px rgba(42, 24, 16, 0.4)" }}
+            className="w-full max-h-72 object-contain rounded-lg bg-white"
+            style={{ boxShadow: "0 8px 22px -12px rgba(60, 40, 20, 0.25)" }}
           />
-          {!pending && (
+          {!submitting && (
             <button
               type="button"
               onClick={() => {
                 setFile(null);
                 if (inputRef.current) inputRef.current.value = "";
               }}
-              className="self-start text-xs italic text-text-muted hover:text-terracotta transition-colors duration-150 ease-out"
-              style={{ fontFamily: "var(--font-serif)" }}
+              className="self-start text-xs text-text-muted hover:text-terracotta transition-colors duration-150 ease-out"
             >
               Choose a different photo
             </button>
@@ -565,106 +763,84 @@ function AddPhotoForm({
       ) : (
         <label
           htmlFor="wine-photo-input"
-          className="flex flex-col items-center justify-center gap-2 rounded-lg cursor-pointer text-center px-6 py-10 transition-colors duration-150 ease-out hover:bg-cream"
+          className="flex flex-col items-center justify-center gap-2 rounded-xl cursor-pointer text-center px-6 py-12 transition-colors duration-150 ease-out hover:bg-cream"
           style={{
-            border: "2px dashed var(--terracotta)",
+            border: "1.5px dashed #c9bda5",
             color: "var(--text-muted)",
           }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.borderColor = "var(--terracotta)";
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.borderColor = "#c9bda5";
+          }}
         >
-          <svg
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            className="w-7 h-7"
-            style={{ color: "var(--terracotta)" }}
-            aria-hidden="true"
-          >
-            <rect x="3" y="6" width="18" height="14" rx="2" />
-            <circle cx="12" cy="13" r="4" />
-            <path d="M8 6l1.5-2h5L16 6" />
-          </svg>
-          <span className="text-sm text-text-deep">
-            Tap to take a photo or upload
-          </span>
-          <span
-            className="italic text-xs text-text-muted"
-            style={{ fontFamily: "var(--font-serif)" }}
-          >
+          <CameraIcon className="w-7 h-7" />
+          <span className="text-sm text-text-deep">Tap to take a photo</span>
+          <span className="text-xs text-text-muted">
             We&apos;ll read the label for you
           </span>
         </label>
-      )}
-
-      {errorMsg && (
-        <div
-          className="rounded-lg px-3 py-2 text-sm"
-          style={{
-            background: "rgba(200, 85, 61, 0.1)",
-            border: "1px solid rgba(200, 85, 61, 0.35)",
-            color: "var(--terracotta-hover)",
-          }}
-        >
-          {errorMsg}
-        </div>
       )}
 
       <div className="flex flex-col-reverse sm:flex-row sm:items-center sm:justify-end gap-2 pt-1">
         <button
           type="button"
           onClick={onClose}
-          disabled={pending}
-          className="rounded-full px-4 py-2.5 text-sm text-text-muted hover:text-text-deep hover:bg-cream transition-colors duration-150 ease-out disabled:opacity-50"
+          disabled={submitting}
+          className="text-sm text-text-muted hover:text-text-deep transition-colors duration-150 ease-out disabled:opacity-50 px-2 py-2.5"
         >
           Cancel
         </button>
-        <button
-          type="submit"
-          disabled={pending || !file}
-          className="inline-flex items-center justify-center gap-2 rounded-full px-5 py-2.5 text-sm font-medium text-cream transition-colors duration-150 ease-out disabled:opacity-50"
-          style={{ background: pending ? "var(--terracotta-hover)" : "var(--terracotta)" }}
-          onMouseEnter={(e) => {
-            if (!pending && file)
-              e.currentTarget.style.background = "var(--terracotta-hover)";
-          }}
-          onMouseLeave={(e) => {
-            if (!pending) e.currentTarget.style.background = "var(--terracotta)";
-          }}
-        >
-          {pending && <Spinner />}
-          {pending ? "Reading the label…" : "Identify this wine"}
-        </button>
+        <SubmitButton pending={submitting} disabled={!file}>
+          {submitting ? "Sending photo…" : "Identify this wine"}
+        </SubmitButton>
       </div>
     </form>
   );
 }
 
-function Spinner() {
+function ErrorAlert({ children }: { children: React.ReactNode }) {
   return (
-    <svg
-      viewBox="0 0 24 24"
-      className="w-3.5 h-3.5 animate-spin"
-      aria-hidden="true"
+    <div
+      className="rounded-lg px-3 py-2 text-sm"
+      style={{
+        background: "rgba(200, 85, 61, 0.08)",
+        border: "1px solid rgba(200, 85, 61, 0.3)",
+        color: "var(--terracotta-hover)",
+      }}
     >
-      <circle
-        cx="12"
-        cy="12"
-        r="9"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2.5"
-        strokeOpacity="0.25"
-      />
-      <path
-        d="M21 12a9 9 0 0 0-9-9"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2.5"
-        strokeLinecap="round"
-      />
-    </svg>
+      {children}
+    </div>
+  );
+}
+
+function SubmitButton({
+  pending,
+  disabled,
+  children,
+}: {
+  pending: boolean;
+  disabled?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="submit"
+      disabled={pending || disabled}
+      className="inline-flex items-center justify-center gap-2 rounded-full px-5 py-2.5 text-sm font-medium text-white transition-colors duration-150 ease-out disabled:opacity-50 min-h-[44px]"
+      style={{ background: pending ? "var(--terracotta-hover)" : "var(--terracotta)" }}
+      onMouseEnter={(e) => {
+        if (!pending && !disabled)
+          e.currentTarget.style.background = "var(--terracotta-hover)";
+      }}
+      onMouseLeave={(e) => {
+        if (!pending) e.currentTarget.style.background = "var(--terracotta)";
+      }}
+    >
+      {pending && <Spinner />}
+      {children}
+    </button>
   );
 }
 
@@ -679,6 +855,7 @@ type EditState = {
   color: string;
   tasting_notes: string;
   price_range: string;
+  price_source: string;
   food_pairings: string;
   drinking_window: string;
   extra_notes: string;
@@ -696,6 +873,7 @@ function wineToEditState(wine: Wine): EditState {
     color: wine.color ?? "",
     tasting_notes: wine.tasting_notes ?? "",
     price_range: wine.price_range ?? "",
+    price_source: wine.price_source ?? "",
     food_pairings: wine.food_pairings ?? "",
     drinking_window: wine.drinking_window ?? "",
     extra_notes: wine.extra_notes ?? "",
@@ -722,6 +900,8 @@ function diffToUpdate(initial: EditState, current: EditState): WineUpdate {
     out.tasting_notes = current.tasting_notes.trim() || null;
   if (current.price_range !== initial.price_range)
     out.price_range = current.price_range.trim() || null;
+  if (current.price_source !== initial.price_source)
+    out.price_source = current.price_source.trim() || null;
   if (current.food_pairings !== initial.food_pairings)
     out.food_pairings = current.food_pairings.trim() || null;
   if (current.drinking_window !== initial.drinking_window)
@@ -734,7 +914,7 @@ function diffToUpdate(initial: EditState, current: EditState): WineUpdate {
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <label className="flex flex-col gap-1.5">
-      <span className={FIELD_LABEL_CLASS}>{label}</span>
+      <span className={LABEL_CAPS_CLASS}>{label}</span>
       {children}
     </label>
   );
@@ -742,12 +922,115 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 
 function SectionTitle({ children }: { children: React.ReactNode }) {
   return (
-    <h3
-      className="italic text-sm text-text-muted pt-1"
-      style={{ fontFamily: "var(--font-serif)" }}
+    <div className={`${LABEL_CAPS_CLASS} pt-2`}>{children}</div>
+  );
+}
+
+function Chip({
+  children,
+  dotColor,
+}: {
+  children: React.ReactNode;
+  dotColor?: string;
+}) {
+  return (
+    <span
+      className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs text-text-deep"
+      style={{
+        background: "#ffffff",
+        border: "1px solid var(--border-soft)",
+      }}
     >
+      {dotColor && (
+        <span
+          className="inline-block w-2 h-2 rounded-full"
+          style={{ backgroundColor: dotColor }}
+        />
+      )}
       {children}
-    </h3>
+    </span>
+  );
+}
+
+type HeroTier = "product" | "label" | "silhouette";
+
+function initialHeroTier(wine: Wine): HeroTier {
+  if (wine.product_image_url) return "product";
+  if (wine.label_image_url) return "label";
+  return "silhouette";
+}
+
+function Hero({
+  wine,
+  tier,
+  onAdvance,
+}: {
+  wine: Wine;
+  tier: HeroTier;
+  onAdvance: () => void;
+}) {
+  const tint = bottleTint(wine.color);
+  const imageFilter =
+    "drop-shadow(0 18px 22px rgba(60, 40, 20, 0.18)) drop-shadow(0 4px 6px rgba(60, 40, 20, 0.08))";
+
+  return (
+    <div
+      className="relative w-full flex flex-col items-center px-6 pt-9 pb-6 sm:pt-12 sm:pb-8 rounded-t-none sm:rounded-t-2xl"
+      style={{
+        background: "linear-gradient(180deg, #faf6ef 0%, #ffffff 100%)",
+      }}
+    >
+      {tier === "product" && wine.product_image_url && (
+        <div
+          className="flex items-center justify-center w-full"
+          style={{ filter: imageFilter }}
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={wine.product_image_url}
+            alt={wine.name}
+            onError={onAdvance}
+            className="block max-h-[240px] sm:max-h-[320px] max-w-full object-contain"
+          />
+        </div>
+      )}
+      {tier === "label" && wine.label_image_url && (
+        <>
+          <div
+            className="flex items-center justify-center w-full"
+            style={{ filter: imageFilter }}
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={wine.label_image_url}
+              alt={wine.name}
+              onError={onAdvance}
+              className="block max-h-[240px] sm:max-h-[320px] max-w-full object-contain"
+            />
+          </div>
+          <p
+            className="italic text-[11px] text-text-muted mt-3"
+            style={{ fontFamily: "var(--font-serif)" }}
+          >
+            Your photo
+          </p>
+        </>
+      )}
+      {tier === "silhouette" && (
+        <div
+          className="flex items-center justify-center"
+          style={{
+            filter:
+              "drop-shadow(0 12px 16px rgba(60, 40, 20, 0.12)) drop-shadow(0 2px 4px rgba(60, 40, 20, 0.06))",
+          }}
+        >
+          <BottleSilhouette
+            tint={tint}
+            className="h-[200px] sm:h-[260px] w-auto"
+          />
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -769,6 +1052,17 @@ function EditWineForm({
   const initialRef = useRef<EditState>(wineToEditState(wine));
   const [state, setState] = useState<EditState>(initialRef.current);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [heroTier, setHeroTier] = useState<HeroTier>(() => initialHeroTier(wine));
+
+  function advanceHeroTier() {
+    setHeroTier((current) => {
+      if (current === "product") {
+        return wine.label_image_url ? "label" : "silhouette";
+      }
+      if (current === "label") return "silhouette";
+      return "silhouette";
+    });
+  }
 
   function set<K extends keyof EditState>(key: K, value: EditState[K]) {
     setState((s) => ({ ...s, [key]: value }));
@@ -799,23 +1093,38 @@ function EditWineForm({
       : "—";
 
   const subtitleParts = [state.producer, state.region].filter((s) => s.trim());
+  const colorChip = state.color || null;
 
   return (
-    <form onSubmit={handleSubmit} className="flex flex-col gap-5">
-      {wine.label_image_url && (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          src={wine.label_image_url}
-          alt={`${wine.name} label`}
-          className="w-full max-h-[280px] object-cover rounded-lg"
-          style={{ boxShadow: "0 10px 28px -12px rgba(42, 24, 16, 0.4)" }}
-        />
+    <form onSubmit={handleSubmit} className="flex flex-col">
+      <Hero wine={wine} tier={heroTier} onAdvance={advanceHeroTier} />
+
+      {wine.label_image_url && heroTier === "product" && (
+        <div className="px-5 sm:px-8 pt-3 flex items-center justify-end gap-2.5">
+          <span
+            className="italic text-[11px] text-text-muted"
+            style={{ fontFamily: "var(--font-serif)" }}
+          >
+            Your photo
+          </span>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={wine.label_image_url}
+            alt="Your photo of the bottle"
+            className="w-12 h-12 rounded-md object-cover"
+            style={{
+              border: "1px solid var(--border-soft)",
+              boxShadow: "0 2px 6px rgba(60, 40, 20, 0.08)",
+            }}
+          />
+        </div>
       )}
 
-      <header className="flex flex-col gap-1 pr-8">
+      {/* Heading */}
+      <div className="flex flex-col gap-2 px-5 sm:px-8 pt-4 pb-1">
         <h2
-          className="text-2xl sm:text-3xl text-text-deep leading-tight"
-          style={{ fontFamily: "var(--font-serif)" }}
+          className="text-2xl sm:text-[28px] font-semibold text-text-deep leading-tight pr-9"
+          style={{ fontFamily: "var(--font-serif)", fontWeight: 600 }}
         >
           {state.name || "Untitled"}
         </h2>
@@ -827,95 +1136,123 @@ function EditWineForm({
             {subtitleParts.join(" · ")}
           </p>
         )}
-      </header>
+        <div className="flex flex-wrap gap-1.5 pt-1">
+          {colorChip && (
+            <Chip dotColor={COLOR_DOT[colorChip] ?? COLOR_DOT.unknown}>
+              {COLOR_LABEL[colorChip] ?? colorChip}
+            </Chip>
+          )}
+          {state.price_range.trim() && <Chip>{state.price_range.trim()}</Chip>}
+          {state.country.trim() && <Chip>{state.country.trim()}</Chip>}
+          {state.vintage.trim() && <Chip>{state.vintage.trim()}</Chip>}
+        </div>
+        {state.price_range.trim() && state.price_source.trim() && (
+          <p
+            className="italic text-[11px] text-text-muted"
+            style={{ fontFamily: "var(--font-serif)" }}
+          >
+            from {state.price_source.trim()}
+          </p>
+        )}
+      </div>
 
-      <Field label="Name">
-        <input
-          value={state.name}
-          required
-          onChange={(e) => set("name", e.target.value)}
-          className={INPUT_CLASS}
-        />
-      </Field>
+      {/* Form */}
+      <div className="flex flex-col gap-5 px-5 sm:px-8 pt-5 safe-pb">
+        <Field label="Name">
+          <input
+            value={state.name}
+            required
+            onChange={(e) => set("name", e.target.value)}
+            className={INPUT_CLASS}
+          />
+        </Field>
 
-      <div className="grid grid-cols-2 gap-3">
-        <Field label="Color">
-          <div className="relative">
-            <select
-              value={state.color}
-              onChange={(e) => set("color", e.target.value)}
-              className={`${INPUT_CLASS} pl-7 appearance-none`}
-            >
-              <option value="">— Unknown</option>
-              {COLOR_OPTIONS.map((c) => (
-                <option key={c} value={c}>
-                  {COLOR_LABEL[c]}
-                </option>
-              ))}
-            </select>
-            <span
-              className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 rounded-full pointer-events-none"
-              style={{
-                backgroundColor: COLOR_DOT[state.color] ?? COLOR_DOT.unknown,
-                boxShadow: "0 0 0 1px rgba(42, 24, 16, 0.1)",
-              }}
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Color">
+            <div className="relative">
+              <select
+                value={state.color}
+                onChange={(e) => set("color", e.target.value)}
+                className={`${INPUT_CLASS} pl-7 appearance-none`}
+              >
+                <option value="">— Unknown</option>
+                {COLOR_OPTIONS.map((c) => (
+                  <option key={c} value={c}>
+                    {COLOR_LABEL[c]}
+                  </option>
+                ))}
+              </select>
+              <span
+                className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 rounded-full pointer-events-none"
+                style={{
+                  backgroundColor: COLOR_DOT[state.color] ?? COLOR_DOT.unknown,
+                }}
+              />
+            </div>
+          </Field>
+          <Field label="Vintage">
+            <input
+              type="number"
+              inputMode="numeric"
+              value={state.vintage}
+              onChange={(e) => set("vintage", e.target.value)}
+              className={INPUT_CLASS}
             />
-          </div>
-        </Field>
-        <Field label="Vintage">
+          </Field>
+        </div>
+
+        <Field label="Producer">
           <input
-            type="number"
-            inputMode="numeric"
-            value={state.vintage}
-            onChange={(e) => set("vintage", e.target.value)}
+            value={state.producer}
+            onChange={(e) => set("producer", e.target.value)}
             className={INPUT_CLASS}
           />
         </Field>
-      </div>
 
-      <Field label="Producer">
-        <input
-          value={state.producer}
-          onChange={(e) => set("producer", e.target.value)}
-          className={INPUT_CLASS}
-        />
-      </Field>
+        <SectionTitle>Origin &amp; Notes</SectionTitle>
 
-      <SectionTitle>Notes &amp; origin</SectionTitle>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Region">
+            <input
+              value={state.region}
+              onChange={(e) => set("region", e.target.value)}
+              className={INPUT_CLASS}
+            />
+          </Field>
+          <Field label="Country">
+            <input
+              value={state.country}
+              onChange={(e) => set("country", e.target.value)}
+              className={INPUT_CLASS}
+            />
+          </Field>
+        </div>
 
-      <div className="grid grid-cols-2 gap-3">
-        <Field label="Region">
+        <Field label="Grape">
           <input
-            value={state.region}
-            onChange={(e) => set("region", e.target.value)}
+            value={state.grape}
+            onChange={(e) => set("grape", e.target.value)}
             className={INPUT_CLASS}
           />
         </Field>
-        <Field label="Country">
-          <input
-            value={state.country}
-            onChange={(e) => set("country", e.target.value)}
-            className={INPUT_CLASS}
-          />
-        </Field>
-      </div>
 
-      <Field label="Grape">
-        <input
-          value={state.grape}
-          onChange={(e) => set("grape", e.target.value)}
-          className={INPUT_CLASS}
-        />
-      </Field>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Price">
+            <input
+              value={state.price_range}
+              onChange={(e) => set("price_range", e.target.value)}
+              className={INPUT_CLASS}
+            />
+          </Field>
+          <Field label="Price source">
+            <input
+              value={state.price_source}
+              onChange={(e) => set("price_source", e.target.value)}
+              className={INPUT_CLASS}
+            />
+          </Field>
+        </div>
 
-      <div className="grid grid-cols-2 gap-3">
-        <Field label="Price range">
-          <input
-            value={state.price_range}
-            onChange={(e) => set("price_range", e.target.value)}
-            className={INPUT_CLASS}
-          />
-        </Field>
         <Field label="Store">
           <input
             value={state.store}
@@ -923,100 +1260,85 @@ function EditWineForm({
             className={INPUT_CLASS}
           />
         </Field>
-      </div>
 
-      <SectionTitle>Tasting</SectionTitle>
+        <SectionTitle>Tasting</SectionTitle>
 
-      <Field label="Drinking window">
-        <input
-          value={state.drinking_window}
-          onChange={(e) => set("drinking_window", e.target.value)}
-          className={INPUT_CLASS}
-        />
-      </Field>
+        <Field label="Drinking window">
+          <input
+            value={state.drinking_window}
+            onChange={(e) => set("drinking_window", e.target.value)}
+            className={INPUT_CLASS}
+          />
+        </Field>
 
-      <Field label="Tasting notes">
-        <textarea
-          rows={3}
-          value={state.tasting_notes}
-          onChange={(e) => set("tasting_notes", e.target.value)}
-          className={INPUT_CLASS}
-        />
-      </Field>
+        <Field label="Tasting notes">
+          <textarea
+            rows={3}
+            value={state.tasting_notes}
+            onChange={(e) => set("tasting_notes", e.target.value)}
+            className={INPUT_CLASS}
+          />
+        </Field>
 
-      <Field label="Food pairings">
-        <textarea
-          rows={2}
-          value={state.food_pairings}
-          onChange={(e) => set("food_pairings", e.target.value)}
-          className={INPUT_CLASS}
-        />
-      </Field>
+        <Field label="Food pairings">
+          <textarea
+            rows={2}
+            value={state.food_pairings}
+            onChange={(e) => set("food_pairings", e.target.value)}
+            className={INPUT_CLASS}
+          />
+        </Field>
 
-      <Field label="Extra notes">
-        <textarea
-          rows={2}
-          value={state.extra_notes}
-          onChange={(e) => set("extra_notes", e.target.value)}
-          className={INPUT_CLASS}
-        />
-      </Field>
+        <Field label="Extra notes">
+          <textarea
+            rows={2}
+            value={state.extra_notes}
+            onChange={(e) => set("extra_notes", e.target.value)}
+            className={INPUT_CLASS}
+          />
+        </Field>
 
-      <SectionTitle>Position</SectionTitle>
-      <p className="text-xs text-text-muted -mt-3">{slotLabel}</p>
+        <SectionTitle>Position</SectionTitle>
+        <p className="text-xs text-text-muted -mt-3">{slotLabel}</p>
 
-      {errorMsg && (
-        <div
-          className="rounded-lg px-3 py-2 text-sm"
-          style={{
-            background: "rgba(200, 85, 61, 0.1)",
-            border: "1px solid rgba(200, 85, 61, 0.35)",
-            color: "var(--terracotta-hover)",
-          }}
-        >
-          {errorMsg}
-        </div>
-      )}
+        {errorMsg && <ErrorAlert>{errorMsg}</ErrorAlert>}
 
-      <div className="flex flex-col-reverse sm:flex-row sm:items-center sm:justify-between gap-2 pt-2">
-        <button
-          type="button"
-          onClick={handleDeleteClick}
-          onBlur={() => setConfirmDelete(false)}
-          disabled={pending}
-          className="rounded-full px-4 py-2.5 text-sm border transition-colors duration-150 ease-out disabled:opacity-50"
-          style={{
-            background: confirmDelete ? "var(--terracotta)" : "transparent",
-            color: confirmDelete ? "var(--cream)" : "var(--terracotta)",
-            borderColor: "var(--terracotta)",
-          }}
-        >
-          {pending ? "…" : confirmDelete ? "Click again to confirm" : "Delete"}
-        </button>
-        <div className="flex items-center justify-end gap-2">
+        <div className="flex flex-col-reverse sm:flex-row sm:items-center sm:justify-between gap-2 pt-3">
           <button
             type="button"
-            onClick={onClose}
+            onClick={handleDeleteClick}
+            onBlur={() => setConfirmDelete(false)}
             disabled={pending}
-            className="rounded-full px-4 py-2.5 text-sm text-text-muted hover:text-text-deep hover:bg-cream transition-colors duration-150 ease-out disabled:opacity-50"
-          >
-            Close
-          </button>
-          <button
-            type="submit"
-            disabled={pending}
-            className="inline-flex items-center justify-center gap-2 rounded-full px-5 py-2.5 text-sm font-medium text-cream transition-colors duration-150 ease-out disabled:opacity-50"
-            style={{ background: "var(--terracotta)" }}
+            className="rounded-full px-4 py-2.5 text-sm transition-colors duration-150 ease-out disabled:opacity-50 min-h-[44px]"
+            style={{
+              background: confirmDelete ? "var(--terracotta)" : "transparent",
+              color: confirmDelete ? "#ffffff" : "var(--text-muted)",
+              border: confirmDelete
+                ? "1px solid var(--terracotta)"
+                : "1px solid transparent",
+            }}
             onMouseEnter={(e) => {
-              if (!pending) e.currentTarget.style.background = "var(--terracotta-hover)";
+              if (!confirmDelete) e.currentTarget.style.color = "var(--terracotta)";
             }}
             onMouseLeave={(e) => {
-              if (!pending) e.currentTarget.style.background = "var(--terracotta)";
+              if (!confirmDelete) e.currentTarget.style.color = "var(--text-muted)";
             }}
           >
-            {pending && <Spinner />}
-            {pending ? "Saving…" : "Save changes"}
+            {pending ? "…" : confirmDelete ? "Click again to confirm" : "Delete"}
           </button>
+          <div className="flex items-center justify-end gap-1">
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={pending}
+              className="text-sm text-text-muted hover:text-text-deep transition-colors duration-150 ease-out disabled:opacity-50 px-2 py-2.5"
+            >
+              Close
+            </button>
+            <SubmitButton pending={pending}>
+              {pending ? "Saving…" : "Save changes"}
+            </SubmitButton>
+          </div>
         </div>
       </div>
     </form>

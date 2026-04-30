@@ -5,6 +5,7 @@ const nextConfig: NextConfig = {
     "10.100.102.25",
     "10.100.102.0/24",
     "192.168.0.0/16",
+    "192.168.7.5",
     "localhost",
   ],
   experimental: {
