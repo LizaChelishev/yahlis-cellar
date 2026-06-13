@@ -716,6 +716,31 @@ export async function deleteWine(id: string) {
   revalidatePath("/");
 }
 
+// Move a bottle to another slot, swapping with any occupant. Delegates to the
+// move_bottle SQL function (migration 0006) so the park → swap → place sequence
+// runs in a single transaction and never violates the slot unique index.
+export async function moveBottle(
+  srcId: string,
+  dstShelf: number,
+  dstPosition: number,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (!srcId) return { ok: false, error: "Missing source id" };
+  if (!Number.isInteger(dstShelf) || !Number.isInteger(dstPosition)) {
+    return { ok: false, error: "Invalid destination slot" };
+  }
+
+  const sb = getSupabase();
+  const { error } = await sb.rpc("move_bottle", {
+    p_src_id: srcId,
+    p_dst_shelf: dstShelf,
+    p_dst_position: dstPosition,
+  });
+  if (error) return { ok: false, error: error.message };
+
+  revalidatePath("/");
+  return { ok: true };
+}
+
 // Mark a bottle as finished: copy its enriched data (plus the slot it was in)
 // into archived_wines, then delete it from the cabinet. Deleting the wines row
 // frees the slot via the existing (shelf, position) unique index. Text fields

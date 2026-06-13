@@ -3,15 +3,42 @@
 import { useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { useRouter } from "next/navigation";
+import {
+  DndContext,
+  DragOverlay,
+  MouseSensor,
+  TouchSensor,
+  pointerWithin,
+  rectIntersection,
+  useDraggable,
+  useDroppable,
+  useSensor,
+  useSensors,
+  type CollisionDetection,
+  type DragEndEvent,
+  type DragStartEvent,
+} from "@dnd-kit/core";
 import { SHELVES, SLOTS_PER_SHELF } from "@/lib/fridge";
 import type { Wine, WineColor } from "@/lib/types";
 import {
   addBottleFromPhoto,
   deleteWine,
   finishWine,
+  moveBottle,
   updateWine,
   type WineUpdate,
 } from "../actions";
+
+// Drop where the finger/cursor is; fall back to rect overlap near slot gaps.
+const slotCollision: CollisionDetection = (args) => {
+  const within = pointerWithin(args);
+  return within.length > 0 ? within : rectIntersection(args);
+};
+
+function parseSlotKey(key: string): { shelf: number; position: number } {
+  const [shelf, position] = key.split(":");
+  return { shelf: Number(shelf), position: Number(position) };
+}
 import {
   bottleTint,
   BottleSilhouette,
@@ -143,8 +170,32 @@ export default function Fridge({ wines }: { wines: Wine[] }) {
   const [processing, setProcessing] = useState<Set<string>>(new Set());
   const [errorToast, setErrorToast] = useState<string | null>(null);
 
+  // Optimistic copy of the cabinet: a drag updates this immediately, and the
+  // effect below reconciles it back to the server truth after router.refresh().
+  const [displayWines, setDisplayWines] = useState<Wine[]>(wines);
+  const [activeWine, setActiveWine] = useState<Wine | null>(null);
+  const [activeRect, setActiveRect] = useState<{
+    width: number;
+    height: number;
+  } | null>(null);
+  // Suppresses the click that fires after a drag so it doesn't open the modal.
+  const justDraggedRef = useRef(0);
+
+  // Touch: hold to lift (so plain swipes still scroll). Mouse: small drag
+  // threshold (so a click still opens the modal).
+  const sensors = useSensors(
+    useSensor(MouseSensor, { activationConstraint: { distance: 8 } }),
+    useSensor(TouchSensor, {
+      activationConstraint: { delay: 200, tolerance: 8 },
+    }),
+  );
+
+  useEffect(() => {
+    setDisplayWines(wines);
+  }, [wines]);
+
   const slotMap = new Map<string, Wine>();
-  for (const w of wines) {
+  for (const w of displayWines) {
     if (w.shelf !== null && w.position !== null) {
       slotMap.set(`${w.shelf}:${w.position}`, w);
     }
@@ -153,18 +204,23 @@ export default function Fridge({ wines }: { wines: Wine[] }) {
   useEffect(() => {
     setProcessing((prev) => {
       if (prev.size === 0) return prev;
+      const filled = new Set<string>();
+      for (const w of wines) {
+        if (w.shelf !== null && w.position !== null) {
+          filled.add(`${w.shelf}:${w.position}`);
+        }
+      }
       const next = new Set(prev);
       let changed = false;
       for (const key of prev) {
         const [s, p] = key.split("-");
-        if (slotMap.has(`${s}:${p}`)) {
+        if (filled.has(`${s}:${p}`)) {
           next.delete(key);
           changed = true;
         }
       }
       return changed ? next : prev;
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [wines]);
 
   const filledCount = slotMap.size;
@@ -172,6 +228,69 @@ export default function Fridge({ wines }: { wines: Wine[] }) {
   for (const w of slotMap.values()) {
     const key = w.color ?? "unknown";
     colorCounts[key] = (colorCounts[key] ?? 0) + 1;
+  }
+
+  function handleDragStart(event: DragStartEvent) {
+    const src = displayWines.find((w) => w.id === String(event.active.id));
+    setActiveWine(src ?? null);
+    const init = event.active.rect.current.initial;
+    setActiveRect(init ? { width: init.width, height: init.height } : null);
+  }
+
+  function handleDragCancel() {
+    setActiveWine(null);
+    setActiveRect(null);
+  }
+
+  function handleDragEnd(event: DragEndEvent) {
+    setActiveWine(null);
+    setActiveRect(null);
+    justDraggedRef.current = Date.now();
+
+    const { active, over } = event;
+    if (!over) return;
+
+    const srcId = String(active.id);
+    const src = displayWines.find((w) => w.id === srcId);
+    if (!src || src.shelf === null || src.position === null) return;
+
+    const { shelf: dstShelf, position: dstPosition } = parseSlotKey(
+      String(over.id),
+    );
+    if (src.shelf === dstShelf && src.position === dstPosition) return;
+    // A processing slot is disabled as a target, but guard anyway.
+    if (processing.has(`${dstShelf}-${dstPosition}`)) return;
+
+    const occupant = displayWines.find(
+      (w) => w.shelf === dstShelf && w.position === dstPosition,
+    );
+
+    const prev = displayWines;
+    const next = displayWines.map((w) => {
+      if (w.id === srcId) return { ...w, shelf: dstShelf, position: dstPosition };
+      if (occupant && w.id === occupant.id) {
+        return { ...w, shelf: src.shelf, position: src.position };
+      }
+      return w;
+    });
+    setDisplayWines(next);
+
+    void (async () => {
+      try {
+        const res = await moveBottle(srcId, dstShelf, dstPosition);
+        if (!res.ok) {
+          setDisplayWines(prev);
+          setErrorToast(res.error || "Couldn't move bottle — try again");
+          return;
+        }
+        router.refresh();
+      } catch (err) {
+        setDisplayWines(prev);
+        setErrorToast(
+          err instanceof Error ? err.message : "Couldn't move bottle — try again",
+        );
+      }
+    })();
   }
 
   function close() {
@@ -277,7 +396,14 @@ export default function Fridge({ wines }: { wines: Wine[] }) {
   }
 
   return (
-    <div className="w-full flex flex-col items-center gap-5 sm:gap-6">
+    <DndContext
+      sensors={sensors}
+      collisionDetection={slotCollision}
+      onDragStart={handleDragStart}
+      onDragEnd={handleDragEnd}
+      onDragCancel={handleDragCancel}
+    >
+      <div className="w-full flex flex-col items-center gap-5 sm:gap-6">
       {errorToast && (
         <div
           className="w-full rounded-lg px-4 py-2.5 flex items-center justify-between text-sm"
@@ -330,24 +456,37 @@ export default function Fridge({ wines }: { wines: Wine[] }) {
                   >
                     {Array.from({ length: SLOTS_PER_SHELF }).map((_, posIdx) => {
                       const position = posIdx + 1;
-                      const wine = slotMap.get(`${shelf}:${position}`);
+                      const slotKey = `${shelf}:${position}`;
+                      const wine = slotMap.get(slotKey);
                       const isProcessing = processing.has(`${shelf}-${position}`);
                       return (
-                        <div key={position} className="min-w-0 w-full">
-                          <Slot
-                            wine={wine}
-                            processing={isProcessing}
-                            shelf={shelf}
-                            position={position}
-                            onClick={() => {
-                              if (wine) {
+                        <DroppableSlot
+                          key={position}
+                          id={slotKey}
+                          disabled={isProcessing}
+                        >
+                          {wine && !isProcessing ? (
+                            <DraggableBottle
+                              wine={wine}
+                              onClick={() => {
+                                // Ignore the click synthesized right after a drag.
+                                if (Date.now() - justDraggedRef.current < 250)
+                                  return;
                                 setModal({ kind: "view", wine });
-                              } else if (!isProcessing) {
-                                setModal({ kind: "add", shelf, position });
+                              }}
+                            />
+                          ) : isProcessing ? (
+                            <ProcessingSlot />
+                          ) : (
+                            <EmptySlot
+                              shelf={shelf}
+                              position={position}
+                              onClick={() =>
+                                setModal({ kind: "add", shelf, position })
                               }
-                            }}
-                          />
-                        </div>
+                            />
+                          )}
+                        </DroppableSlot>
                       );
                     })}
                   </div>
@@ -424,7 +563,24 @@ export default function Fridge({ wines }: { wines: Wine[] }) {
           />
         </Modal>
       )}
-    </div>
+      </div>
+
+      <DragOverlay dropAnimation={null}>
+        {activeWine ? (
+          <div
+            className="aspect-[1/2.4] rounded-md overflow-hidden bg-white"
+            style={{
+              width: activeRect?.width ?? 64,
+              boxShadow: "0 18px 30px -10px rgba(60, 40, 20, 0.45)",
+              transform: "scale(1.06)",
+              cursor: "grabbing",
+            }}
+          >
+            <BottleContent wine={activeWine} />
+          </div>
+        ) : null}
+      </DragOverlay>
+    </DndContext>
   );
 }
 
@@ -492,30 +648,54 @@ function ProductSlotContent({
   );
 }
 
-function FilledSlot({ wine, onClick }: { wine: Wine; onClick: () => void }) {
-  const tint = bottleTint(wine.color);
+// Just the bottle artwork (product image with silhouette fallback). Shared by
+// the in-grid slot and the drag overlay.
+function BottleContent({ wine }: { wine: Wine }) {
   const [imgErrored, setImgErrored] = useState(false);
   const showImage = !!wine.product_image_url && !imgErrored;
+  if (showImage) {
+    return (
+      <ProductSlotContent
+        src={wine.product_image_url!}
+        name={wine.name}
+        onImgError={() => setImgErrored(true)}
+      />
+    );
+  }
+  return <SilhouetteSlotContent tint={bottleTint(wine.color)} name={wine.name} />;
+}
 
+function FilledSlot({
+  wine,
+  onClick,
+  dragRef,
+  dragListeners,
+  dragAttributes,
+  isDragging,
+}: {
+  wine: Wine;
+  onClick: () => void;
+  dragRef?: ReturnType<typeof useDraggable>["setNodeRef"];
+  dragListeners?: ReturnType<typeof useDraggable>["listeners"];
+  dragAttributes?: ReturnType<typeof useDraggable>["attributes"];
+  isDragging?: boolean;
+}) {
   return (
     <div className="relative group">
       <div
-        className="bottle-in relative block w-full min-w-0 aspect-[1/2.4] rounded-md overflow-hidden bg-white transition-transform duration-150 ease-out hover:scale-[1.03]"
+        className={`bottle-in relative block w-full min-w-0 aspect-[1/2.4] rounded-md overflow-hidden bg-white transition-[transform,opacity] duration-150 ease-out ${
+          isDragging ? "opacity-30" : "hover:scale-[1.03]"
+        }`}
       >
-        {showImage ? (
-          <ProductSlotContent
-            src={wine.product_image_url!}
-            name={wine.name}
-            onImgError={() => setImgErrored(true)}
-          />
-        ) : (
-          <SilhouetteSlotContent tint={tint} name={wine.name} />
-        )}
+        <BottleContent wine={wine} />
         <button
+          ref={dragRef}
+          {...dragAttributes}
+          {...dragListeners}
           type="button"
           onClick={onClick}
           aria-label={`View ${wine.name}`}
-          className="absolute inset-0 w-full h-full bg-transparent border-0 cursor-pointer z-10"
+          className="absolute inset-0 w-full h-full bg-transparent border-0 cursor-grab active:cursor-grabbing z-10"
           style={{
             WebkitTapHighlightColor: "transparent",
             touchAction: "manipulation",
@@ -542,25 +722,64 @@ function FilledSlot({ wine, onClick }: { wine: Wine; onClick: () => void }) {
   );
 }
 
-function Slot({
+function DraggableBottle({
   wine,
-  processing,
+  onClick,
+}: {
+  wine: Wine;
+  onClick: () => void;
+}) {
+  const { setNodeRef, listeners, attributes, isDragging } = useDraggable({
+    id: wine.id,
+  });
+  return (
+    <FilledSlot
+      wine={wine}
+      onClick={onClick}
+      dragRef={setNodeRef}
+      dragListeners={listeners}
+      dragAttributes={attributes}
+      isDragging={isDragging}
+    />
+  );
+}
+
+function DroppableSlot({
+  id,
+  disabled,
+  children,
+}: {
+  id: string;
+  disabled?: boolean;
+  children: React.ReactNode;
+}) {
+  const { setNodeRef, isOver, active } = useDroppable({ id, disabled });
+  const highlight = isOver && !!active;
+  return (
+    <div ref={setNodeRef} className="relative min-w-0 w-full">
+      {children}
+      {highlight && (
+        <div
+          className="pointer-events-none absolute inset-0 rounded-md z-20"
+          style={{
+            boxShadow: "0 0 0 2px var(--terracotta)",
+            background: "rgba(200, 85, 61, 0.06)",
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function EmptySlot({
   shelf,
   position,
   onClick,
 }: {
-  wine: Wine | undefined;
-  processing: boolean;
   shelf: number;
   position: number;
   onClick: () => void;
 }) {
-  if (wine) {
-    return <FilledSlot wine={wine} onClick={onClick} />;
-  }
-  if (processing) {
-    return <ProcessingSlot />;
-  }
   return (
     <div
       className="relative group w-full min-w-0 aspect-[1/2.4] rounded-md flex items-center justify-center transition-colors duration-150 ease-out hover:[--plus-color:var(--terracotta)]"
