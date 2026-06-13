@@ -136,6 +136,23 @@ const RECORD_WINE_TOOL: Anthropic.Tool = {
   },
 } as Anthropic.Tool;
 
+const RECORD_IMAGE_TOOL: Anthropic.Tool = {
+  name: "record_image",
+  description:
+    "Record the best clean product photograph URL found for this wine. Call this exactly once after searching. If no suitable image is found, set product_image_url to null.",
+  input_schema: {
+    type: "object",
+    properties: {
+      product_image_url: {
+        type: ["string", "null"],
+        description:
+          "Direct URL of a clean product photograph of this exact wine bottle on a white/neutral background, from a wine retailer or producer website. Must end in .jpg/.jpeg/.png/.webp. Null if none found.",
+      },
+    },
+    required: ["product_image_url"],
+  },
+} as Anthropic.Tool;
+
 const WEB_SEARCH_TOOL = {
   type: "web_search_20260209",
   name: "web_search",
@@ -230,6 +247,25 @@ You MUST follow these rules:
    - CRITICAL: Do NOT include any XML-style citation markers (e.g. <cite index=...>...</cite>), source references, footnote markers, or HTML/XML tags of any kind in any field of the record_wine tool input.
    - Provide plain text only. If your search results contain citation markers wrapping text, strip the markers and use only the underlying text.
    - This applies to every text field: name, producer, region, country, grape, tasting_notes, price_range, food_pairings, drinking_window, extra_notes.`;
+
+// Focused prompt for re-running ONLY the product-image search step (Fix 2),
+// reusing the exact image criteria from rule 3 of SYSTEM_PROMPT.
+const IMAGE_SYSTEM_PROMPT = `You are a wine image finder. Given a wine's details, find a single clean product photograph of the bottle, then call record_image exactly once.
+
+PRODUCT IMAGE — REQUIRED MULTI-SEARCH:
+Attempt several distinct web searches before giving up. Useful queries:
+  1. "[producer] [wine name] [vintage] bottle png"
+  2. "[wine name] [vintage] site:vivino.com"
+  3. "[wine name] site:wineroute.co.il OR site:manovino.co.il"
+  4. "[producer] official site [wine name]"
+Use web_fetch to confirm a candidate page when helpful.
+The URL you return MUST:
+  - Start with https://
+  - End with .jpg, .jpeg, .png, or .webp (the URL itself, not the hosting page).
+  - Show ONLY the bottle on a clean white or neutral solid background. NO hands, people, food, vineyards, store shelves, restaurants, wine glasses, or scene clutter.
+  - NOT be a closeup of just the label.
+  - NOT come from supabase.co/storage (that is the user's own upload).
+If after your searches no URL meets ALL criteria, set product_image_url to null. Better null than a wrong or messy image.`;
 
 function safeExt(name: string, fallback = "jpg"): string {
   const m = /\.([a-zA-Z0-9]{1,5})$/.exec(name);
@@ -784,4 +820,115 @@ export async function finishWine(id: string) {
   if (delErr) throw new Error(delErr.message);
 
   revalidatePath("/");
+}
+
+// Re-run ONLY the product-image search step of the enrichment workflow for an
+// already-saved wine, using its known text details. Reuses the same model,
+// web tools (and their usage caps), retry, and coerceProductImageUrl as the
+// add flow. Returns a sanitized URL or null.
+async function findProductImage(wine: {
+  name: string;
+  producer: string | null;
+  vintage: number | null;
+  region: string | null;
+  country: string | null;
+}): Promise<string | null> {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) throw new Error("Missing ANTHROPIC_API_KEY in environment");
+  const client = new Anthropic({ apiKey });
+
+  const details = [
+    `Name: ${wine.name}`,
+    wine.producer ? `Producer: ${wine.producer}` : null,
+    wine.vintage !== null ? `Vintage: ${wine.vintage}` : null,
+    wine.region ? `Region: ${wine.region}` : null,
+    wine.country ? `Country: ${wine.country}` : null,
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  const response = await withRetry(() =>
+    client.messages.create({
+      model: MODEL,
+      max_tokens: 2048,
+      system: IMAGE_SYSTEM_PROMPT,
+      tools: [
+        WEB_SEARCH_TOOL as unknown as Anthropic.ToolUnion,
+        WEB_FETCH_TOOL as unknown as Anthropic.ToolUnion,
+        RECORD_IMAGE_TOOL,
+      ],
+      tool_choice: { type: "auto" },
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: `Find a clean product bottle photo for this wine and record it via record_image.\n\n${details}`,
+            },
+          ],
+        },
+      ],
+    }),
+  );
+
+  for (const block of response.content) {
+    if (block.type === "tool_use" && block.name === "record_image") {
+      const input = block.input as { product_image_url?: unknown };
+      const url = coerceProductImageUrl(input.product_image_url);
+      console.log(`[refetch-image] result for "${wine.name}":`, url ?? "(none)");
+      return url;
+    }
+  }
+  console.warn(
+    `[refetch-image] Claude did not call record_image (stop_reason=${response.stop_reason})`,
+  );
+  return null;
+}
+
+// Per-bottle "find a better image" action. Searches for a product photo and,
+// only if one is found, writes it through coerceProductImageUrl. On no result
+// or error, leaves the bottle untouched and reports back for an inline toast.
+export async function refetchProductImage(
+  id: string,
+): Promise<
+  { ok: true; productImageUrl: string } | { ok: false; error: string }
+> {
+  if (!id) return { ok: false, error: "Missing id" };
+  if (!process.env.ANTHROPIC_API_KEY) {
+    return { ok: false, error: "Server is missing ANTHROPIC_API_KEY" };
+  }
+
+  const sb = getSupabase();
+  const { data: wine, error: selErr } = await sb
+    .from("wines")
+    .select("name, producer, vintage, region, country")
+    .eq("id", id)
+    .single();
+  if (selErr) return { ok: false, error: selErr.message };
+  if (!wine) return { ok: false, error: "Wine not found" };
+
+  let url: string | null;
+  try {
+    url = await findProductImage(wine);
+  } catch (err) {
+    console.error("[refetch-image] search failed:", err);
+    return {
+      ok: false,
+      error: "AI service is temporarily busy. Please try again in a minute.",
+    };
+  }
+
+  if (!url) {
+    return { ok: false, error: "Couldn't find a better image — try again." };
+  }
+
+  const { error: updErr } = await sb
+    .from("wines")
+    .update({ product_image_url: url })
+    .eq("id", id);
+  if (updErr) return { ok: false, error: updErr.message };
+
+  revalidatePath("/");
+  return { ok: true, productImageUrl: url };
 }

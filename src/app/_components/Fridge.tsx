@@ -25,6 +25,7 @@ import {
   deleteWine,
   finishWine,
   moveBottle,
+  refetchProductImage,
   updateWine,
   type WineUpdate,
 } from "../actions";
@@ -141,6 +142,24 @@ function Spinner({ className = "w-3.5 h-3.5" }: { className?: string }) {
   );
 }
 
+function RefreshIcon({ className = "" }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+      <path d="M21 4v5h-5" />
+    </svg>
+  );
+}
+
 function ProcessingSlot() {
   return (
     <div
@@ -168,6 +187,12 @@ export default function Fridge({ wines }: { wines: Wine[] }) {
   const [pending, setPending] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [processing, setProcessing] = useState<Set<string>>(new Set());
+  // Slots whose product image is being re-fetched. Separate from `processing`
+  // (add) because those slots are already filled, so add's empty→filled clear
+  // effect doesn't apply — this set is managed entirely by handleRefetch.
+  const [refetchingSlots, setRefetchingSlots] = useState<Set<string>>(
+    new Set(),
+  );
   const [errorToast, setErrorToast] = useState<string | null>(null);
 
   // Optimistic copy of the cabinet: a drag updates this immediately, and the
@@ -395,6 +420,58 @@ export default function Fridge({ wines }: { wines: Wine[] }) {
     }
   }
 
+  // Non-blocking image re-fetch, mirroring the add flow: mark the slot busy,
+  // close the modal, then await in the background while the rest of the app
+  // stays interactive. The new image is applied optimistically and reconciled
+  // on refresh; failures revert the spinner and surface via the toast.
+  async function handleRefetch(wine: Wine) {
+    if (wine.shelf === null || wine.position === null) return;
+    const slotKey = `${wine.shelf}-${wine.position}`;
+
+    // Keep the detail modal open. The slot shows its spinner underneath, and
+    // the modal shows its own "updating image…" indicator (derived from
+    // refetchingSlots); the new image swaps into the open hero on success.
+    setErrorToast(null);
+    setRefetchingSlots((prev) => new Set(prev).add(slotKey));
+
+    const clear = () =>
+      setRefetchingSlots((prev) => {
+        const next = new Set(prev);
+        next.delete(slotKey);
+        return next;
+      });
+
+    try {
+      const res = await refetchProductImage(wine.id);
+      if (res.ok) {
+        const url = res.productImageUrl;
+        setDisplayWines((prev) =>
+          prev.map((w) =>
+            w.id === wine.id ? { ...w, product_image_url: url } : w,
+          ),
+        );
+        // Swap the new image into the still-open modal's hero in place.
+        setModal((prev) =>
+          prev.kind === "view" && prev.wine.id === wine.id
+            ? { kind: "view", wine: { ...prev.wine, product_image_url: url } }
+            : prev,
+        );
+        clear();
+        router.refresh();
+      } else {
+        clear();
+        setErrorToast(res.error || "Couldn't find a better image — try again");
+      }
+    } catch (err) {
+      clear();
+      setErrorToast(
+        err instanceof Error
+          ? err.message
+          : "Couldn't find a better image — try again",
+      );
+    }
+  }
+
   return (
     <DndContext
       sensors={sensors}
@@ -458,7 +535,9 @@ export default function Fridge({ wines }: { wines: Wine[] }) {
                       const position = posIdx + 1;
                       const slotKey = `${shelf}:${position}`;
                       const wine = slotMap.get(slotKey);
-                      const isProcessing = processing.has(`${shelf}-${position}`);
+                      const isProcessing =
+                        processing.has(`${shelf}-${position}`) ||
+                        refetchingSlots.has(`${shelf}-${position}`);
                       return (
                         <DroppableSlot
                           key={position}
@@ -549,6 +628,14 @@ export default function Fridge({ wines }: { wines: Wine[] }) {
             onSave={(fields) => handleUpdate(modal.wine.id, fields)}
             onDelete={() => handleDelete(modal.wine.id)}
             onFinish={() => handleFinish(modal.wine.id)}
+            onRefetch={() => handleRefetch(modal.wine)}
+            refetching={
+              modal.wine.shelf !== null &&
+              modal.wine.position !== null &&
+              refetchingSlots.has(
+                `${modal.wine.shelf}-${modal.wine.position}`,
+              )
+            }
           />
         </Modal>
       )}
@@ -648,17 +735,38 @@ function ProductSlotContent({
   );
 }
 
-// Just the bottle artwork (product image with silhouette fallback). Shared by
-// the in-grid slot and the drag overlay.
+// Just the bottle artwork. Same three-tier fallback as the modal Hero —
+// product_image_url → label_image_url ("your photo") → tinted silhouette —
+// cascading via onError. Shared by the in-grid slot and the drag overlay.
 function BottleContent({ wine }: { wine: Wine }) {
-  const [imgErrored, setImgErrored] = useState(false);
-  const showImage = !!wine.product_image_url && !imgErrored;
-  if (showImage) {
+  const [tier, setTier] = useState<HeroTier>(() => initialHeroTier(wine));
+  // Reset when this instance shows a different bottle (after a swap) OR the same
+  // bottle's images change (after a re-fetch lands), so the tier re-evaluates
+  // from the top instead of sticking to a stale value.
+  const sig = `${wine.id}|${wine.product_image_url ?? ""}|${wine.label_image_url ?? ""}`;
+  const [forSig, setForSig] = useState(sig);
+  if (forSig !== sig) {
+    setForSig(sig);
+    setTier(initialHeroTier(wine));
+  }
+
+  const advance = () => setTier((t) => nextHeroTier(t, wine));
+
+  if (tier === "product" && wine.product_image_url) {
     return (
       <ProductSlotContent
-        src={wine.product_image_url!}
+        src={wine.product_image_url}
         name={wine.name}
-        onImgError={() => setImgErrored(true)}
+        onImgError={advance}
+      />
+    );
+  }
+  if (tier === "label" && wine.label_image_url) {
+    return (
+      <ProductSlotContent
+        src={wine.label_image_url}
+        name={wine.name}
+        onImgError={advance}
       />
     );
   }
@@ -1076,6 +1184,8 @@ function EditWineForm({
   onSave,
   onDelete,
   onFinish,
+  onRefetch,
+  refetching,
   onClose,
 }: {
   wine: Wine;
@@ -1084,6 +1194,8 @@ function EditWineForm({
   onSave: (fields: WineUpdate) => void;
   onDelete: () => void;
   onFinish: () => void;
+  onRefetch: () => void;
+  refetching: boolean;
   onClose: () => void;
 }) {
   const initialRef = useRef<EditState>(wineToEditState(wine));
@@ -1091,6 +1203,15 @@ function EditWineForm({
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [confirmFinish, setConfirmFinish] = useState(false);
   const [heroTier, setHeroTier] = useState<HeroTier>(() => initialHeroTier(wine));
+  // When a re-fetched image swaps into this open modal, re-evaluate the hero
+  // tier so the new product photo shows in place (instead of sticking to the
+  // tier chosen when the modal first opened).
+  const heroSig = `${wine.product_image_url ?? ""}|${wine.label_image_url ?? ""}`;
+  const [forHeroSig, setForHeroSig] = useState(heroSig);
+  if (forHeroSig !== heroSig) {
+    setForHeroSig(heroSig);
+    setHeroTier(initialHeroTier(wine));
+  }
 
   function advanceHeroTier() {
     setHeroTier((current) => nextHeroTier(current, wine));
@@ -1198,6 +1319,29 @@ function EditWineForm({
 
       {/* Form */}
       <div className="flex flex-col gap-5 px-5 sm:px-8 pt-5 safe-pb">
+        <button
+          type="button"
+          onClick={onRefetch}
+          disabled={pending || refetching}
+          aria-busy={refetching}
+          className="inline-flex items-center justify-center gap-2 rounded-full px-4 py-2.5 text-sm font-medium text-text-muted transition-colors duration-150 ease-out disabled:opacity-50 min-h-[44px] hover:text-terracotta"
+          style={{ border: "1px solid var(--border-soft)" }}
+        >
+          {refetching ? (
+            <>
+              <Spinner className="w-4 h-4" />
+              Updating image…
+            </>
+          ) : (
+            <>
+              <RefreshIcon className="w-4 h-4" />
+              {wine.product_image_url
+                ? "Find a better image"
+                : "Find a product image"}
+            </>
+          )}
+        </button>
+
         <Field label="Name">
           <input
             value={state.name}
