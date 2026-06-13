@@ -715,3 +715,48 @@ export async function deleteWine(id: string) {
   if (error) throw new Error(error.message);
   revalidatePath("/");
 }
+
+// Mark a bottle as finished: copy its enriched data (plus the slot it was in)
+// into archived_wines, then delete it from the cabinet. Deleting the wines row
+// frees the slot via the existing (shelf, position) unique index. Text fields
+// are run back through coerceString so nothing AI-sourced is archived raw.
+export async function finishWine(id: string) {
+  if (!id) throw new Error("Missing id");
+  const sb = getSupabase();
+
+  const { data: wine, error: selErr } = await sb
+    .from("wines")
+    .select("*")
+    .eq("id", id)
+    .single();
+  if (selErr) throw new Error(selErr.message);
+  if (!wine) throw new Error("Wine not found");
+
+  const { error: insErr } = await sb.from("archived_wines").insert({
+    name: coerceString(wine.name) ?? "Unknown wine",
+    store: coerceString(wine.store),
+    producer: coerceString(wine.producer),
+    region: coerceString(wine.region),
+    country: coerceString(wine.country),
+    vintage: coerceVintage(wine.vintage),
+    grape: coerceString(wine.grape),
+    color: coerceColor(wine.color),
+    tasting_notes: coerceString(wine.tasting_notes),
+    price_range: coerceString(wine.price_range),
+    price_source: coerceString(wine.price_source),
+    food_pairings: coerceString(wine.food_pairings),
+    drinking_window: coerceString(wine.drinking_window),
+    extra_notes: coerceString(wine.extra_notes),
+    label_image_url: wine.label_image_url,
+    product_image_url: wine.product_image_url,
+    shelf: wine.shelf,
+    position: wine.position,
+    // finished_at defaults to now() in the DB.
+  });
+  if (insErr) throw new Error(insErr.message);
+
+  const { error: delErr } = await sb.from("wines").delete().eq("id", id);
+  if (delErr) throw new Error(delErr.message);
+
+  revalidatePath("/");
+}

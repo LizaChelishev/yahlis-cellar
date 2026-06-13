@@ -1,17 +1,22 @@
 import { getSupabase } from "@/lib/supabase";
-import type { Wine } from "@/lib/types";
-import Fridge from "./_components/Fridge";
+import type { ArchivedWine, Wine } from "@/lib/types";
+import CellarTabs from "./_components/CellarTabs";
 
 export const dynamic = "force-dynamic";
 
 export default async function Page() {
   const sb = getSupabase();
-  const { data, error } = await sb
-    .from("wines")
-    .select("*")
-    .order("created_at", { ascending: false });
-  if (error) throw new Error(error.message);
-  const wines = (data ?? []) as Wine[];
+  const [winesRes, archivedRes] = await Promise.all([
+    sb.from("wines").select("*").order("created_at", { ascending: false }),
+    sb
+      .from("archived_wines")
+      .select("*")
+      .order("finished_at", { ascending: false }),
+  ]);
+  if (winesRes.error) throw new Error(winesRes.error.message);
+  if (archivedRes.error) throw new Error(archivedRes.error.message);
+  const wines = (winesRes.data ?? []) as Wine[];
+  const archived = (archivedRes.data ?? []) as ArchivedWine[];
 
   return (
     <main className="min-h-dvh px-4 py-6 sm:py-10 flex flex-col items-center">
@@ -24,7 +29,7 @@ export default async function Page() {
             Yahli&apos;s Cellar
           </h1>
         </header>
-        <Fridge wines={wines} />
+        <CellarTabs wines={wines} archived={archived} />
       </div>
     </main>
   );
