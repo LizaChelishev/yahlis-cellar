@@ -19,7 +19,7 @@ import {
   type DragStartEvent,
 } from "@dnd-kit/core";
 import { SHELVES, SLOTS_PER_SHELF } from "@/lib/fridge";
-import type { Wine, WineColor } from "@/lib/types";
+import type { ArchivedWine, Wine, WineColor } from "@/lib/types";
 import {
   addBottleFromPhoto,
   deleteWine,
@@ -54,6 +54,7 @@ import {
   WineGlassIcon,
   type HeroTier,
 } from "./wine-visuals";
+import RatingEditor from "./RatingEditor";
 
 const COLOR_OPTIONS: WineColor[] = ["red", "white", "rose", "sparkling"];
 
@@ -179,7 +180,8 @@ function ProcessingSlot() {
 type ModalState =
   | { kind: "none" }
   | { kind: "view"; wine: Wine }
-  | { kind: "add"; shelf: number; position: number };
+  | { kind: "add"; shelf: number; position: number }
+  | { kind: "rate"; archived: ArchivedWine };
 
 export default function Fridge({ wines }: { wines: Wine[] }) {
   const router = useRouter();
@@ -407,9 +409,11 @@ export default function Fridge({ wines }: { wines: Wine[] }) {
     setErrorMsg(null);
     setPending(true);
     try {
-      await finishWine(id);
+      // Finish is a single tap; it completes here. The archived row comes back
+      // so we can offer an optional, skippable rate step right after.
+      const archived = await finishWine(id);
       flushSync(() => {
-        setModal({ kind: "none" });
+        setModal({ kind: "rate", archived });
         setPending(false);
       });
       router.refresh();
@@ -649,6 +653,18 @@ export default function Fridge({ wines }: { wines: Wine[] }) {
             onSubmit={handleAdd}
           />
         </Modal>
+      )}
+
+      {modal.kind === "rate" && (
+        <RatingEditor
+          archived={modal.archived}
+          heading="Rate this wine?"
+          onClose={close}
+          onSaved={() => {
+            flushSync(() => setModal({ kind: "none" }));
+            router.refresh();
+          }}
+        />
       )}
       </div>
 

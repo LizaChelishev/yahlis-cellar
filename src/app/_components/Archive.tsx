@@ -1,7 +1,11 @@
 "use client";
 
 import { useState } from "react";
-import type { ArchivedWine } from "@/lib/types";
+import { flushSync } from "react-dom";
+import { useRouter } from "next/navigation";
+import type { ArchivedWine, Rater, WineRating } from "@/lib/types";
+import { formatScore, RATERS, tagLabel } from "@/lib/ratings";
+import RatingEditor from "./RatingEditor";
 import {
   bottleTint,
   BottleSilhouette,
@@ -16,6 +20,35 @@ import {
   WineGlassIcon,
   type HeroTier,
 } from "./wine-visuals";
+
+// Small Y / L badges showing which raters have rated (filled = rated).
+function RatedBadges({ wine }: { wine: ArchivedWine }) {
+  const ratedBy: Record<Rater, boolean> = {
+    yahli: wine.yahli_rating != null,
+    liza: wine.liza_rating != null,
+  };
+  return (
+    <div className="flex items-center gap-1" aria-hidden="true">
+      {RATERS.map(({ id, initial }) => {
+        const rated = ratedBy[id];
+        return (
+          <span
+            key={id}
+            title={`${id === "yahli" ? "Yahli" : "Liza"}: ${rated ? "rated" : "not rated"}`}
+            className="inline-flex items-center justify-center w-4 h-4 rounded-full text-[9px] font-semibold"
+            style={{
+              background: rated ? "var(--terracotta)" : "transparent",
+              color: rated ? "#ffffff" : "var(--text-muted)",
+              border: rated ? "none" : "1px solid var(--border-soft)",
+            }}
+          >
+            {initial}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
 
 function formatFinished(iso: string): string {
   // Fixed en-US format so server and client render identically (no hydration drift).
@@ -96,14 +129,17 @@ function ArchiveCard({
       <div className="px-2 pt-2">
         <ArchiveThumb wine={wine} />
       </div>
-      <div className="flex flex-col gap-0.5 px-3 pb-3 pt-1">
+      <div className="flex flex-col gap-1 px-3 pb-3 pt-1">
         <span
           className="text-sm leading-snug text-text-deep line-clamp-2"
           style={{ fontFamily: "var(--font-serif)" }}
         >
           {wine.name}
         </span>
-        <span className="text-[11px] text-text-muted">{meta}</span>
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[11px] text-text-muted">{meta}</span>
+          <RatedBadges wine={wine} />
+        </div>
       </div>
     </button>
   );
@@ -119,12 +155,65 @@ function ReadRow({ label, value }: { label: string; value: string | null }) {
   );
 }
 
+// Read-only display of one rater's tasting rating.
+function RatingDisplay({
+  label,
+  rating,
+}: {
+  label: string;
+  rating: WineRating | null;
+}) {
+  if (!rating) {
+    return (
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-sm text-text-deep">{label}</span>
+        <span className="text-xs italic text-text-muted">Not rated</span>
+      </div>
+    );
+  }
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="text-sm text-text-deep">{label}</span>
+        <span style={{ fontFamily: "var(--font-serif)" }}>
+          <span className="text-xl text-text-deep">
+            {formatScore(rating.score)}
+          </span>
+          <span className="text-xs text-text-muted"> / 5</span>
+        </span>
+      </div>
+      {rating.tags.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {rating.tags.map((slug) => (
+            <Chip key={slug}>{tagLabel(slug)}</Chip>
+          ))}
+        </div>
+      )}
+      {rating.would_buy_again !== null && (
+        <p className="text-xs text-text-muted">
+          Would buy again:{" "}
+          <span className="text-text-deep">
+            {rating.would_buy_again ? "Yes" : "No"}
+          </span>
+        </p>
+      )}
+      {rating.note?.trim() && (
+        <p className="text-sm text-text-deep whitespace-pre-line">
+          {rating.note.trim()}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function ArchiveDetail({
   wine,
   onClose,
+  onEditRating,
 }: {
   wine: ArchivedWine;
   onClose: () => void;
+  onEditRating: () => void;
 }) {
   const [heroTier, setHeroTier] = useState<HeroTier>(() => initialHeroTier(wine));
   const advanceHeroTier = () => setHeroTier((t) => nextHeroTier(t, wine));
@@ -238,6 +327,24 @@ function ArchiveDetail({
 
           <ReadRow label="Store" value={wine.store} />
 
+          {/* Ratings */}
+          <div className={`${LABEL_CAPS_CLASS} pt-1`}>Ratings</div>
+          <div className="flex flex-col gap-4 -mt-2">
+            <RatingDisplay label="Yahli" rating={wine.yahli_rating} />
+            <RatingDisplay label="Liza" rating={wine.liza_rating} />
+          </div>
+          <button
+            type="button"
+            onClick={onEditRating}
+            className="inline-flex items-center justify-center gap-2 rounded-full px-4 py-2.5 text-sm font-medium text-text-muted transition-colors duration-150 ease-out min-h-[44px] hover:text-terracotta"
+            style={{ border: "1px solid var(--border-soft)" }}
+          >
+            <WineGlassIcon className="w-4 h-4" />
+            {wine.yahli_rating || wine.liza_rating
+              ? "Add/edit rating"
+              : "Add a rating"}
+          </button>
+
           <div className={`${LABEL_CAPS_CLASS} pt-1`}>Position</div>
           <p className="text-xs text-text-muted -mt-3">{slotLabel}</p>
 
@@ -257,7 +364,9 @@ function ArchiveDetail({
 }
 
 export default function Archive({ archived }: { archived: ArchivedWine[] }) {
+  const router = useRouter();
   const [selected, setSelected] = useState<ArchivedWine | null>(null);
+  const [editing, setEditing] = useState<ArchivedWine | null>(null);
 
   if (archived.length === 0) {
     return (
@@ -290,7 +399,28 @@ export default function Archive({ archived }: { archived: ArchivedWine[] }) {
       </div>
 
       {selected && (
-        <ArchiveDetail wine={selected} onClose={() => setSelected(null)} />
+        <ArchiveDetail
+          wine={selected}
+          onClose={() => setSelected(null)}
+          onEditRating={() => {
+            // Replace the detail modal with the rating editor.
+            const wine = selected;
+            flushSync(() => setSelected(null));
+            setEditing(wine);
+          }}
+        />
+      )}
+
+      {editing && (
+        <RatingEditor
+          archived={editing}
+          heading="Tasting rating"
+          onClose={() => setEditing(null)}
+          onSaved={() => {
+            flushSync(() => setEditing(null));
+            router.refresh();
+          }}
+        />
       )}
     </div>
   );

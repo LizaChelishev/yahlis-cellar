@@ -7,6 +7,8 @@
 import { revalidatePath } from "next/cache";
 import Anthropic from "@anthropic-ai/sdk";
 import { getSupabase } from "@/lib/supabase";
+import type { ArchivedWine, Rater, WineRating } from "@/lib/types";
+import { isValidScore, TASTE_TAG_SLUGS } from "@/lib/ratings";
 
 const BUCKET = "wine-labels";
 const MODEL = "claude-haiku-4-5";
@@ -781,7 +783,7 @@ export async function moveBottle(
 // into archived_wines, then delete it from the cabinet. Deleting the wines row
 // frees the slot via the existing (shelf, position) unique index. Text fields
 // are run back through coerceString so nothing AI-sourced is archived raw.
-export async function finishWine(id: string) {
+export async function finishWine(id: string): Promise<ArchivedWine> {
   if (!id) throw new Error("Missing id");
   const sb = getSupabase();
 
@@ -793,33 +795,89 @@ export async function finishWine(id: string) {
   if (selErr) throw new Error(selErr.message);
   if (!wine) throw new Error("Wine not found");
 
-  const { error: insErr } = await sb.from("archived_wines").insert({
-    name: coerceString(wine.name) ?? "Unknown wine",
-    store: coerceString(wine.store),
-    producer: coerceString(wine.producer),
-    region: coerceString(wine.region),
-    country: coerceString(wine.country),
-    vintage: coerceVintage(wine.vintage),
-    grape: coerceString(wine.grape),
-    color: coerceColor(wine.color),
-    tasting_notes: coerceString(wine.tasting_notes),
-    price_range: coerceString(wine.price_range),
-    price_source: coerceString(wine.price_source),
-    food_pairings: coerceString(wine.food_pairings),
-    drinking_window: coerceString(wine.drinking_window),
-    extra_notes: coerceString(wine.extra_notes),
-    label_image_url: wine.label_image_url,
-    product_image_url: wine.product_image_url,
-    shelf: wine.shelf,
-    position: wine.position,
-    // finished_at defaults to now() in the DB.
-  });
+  const { data: archived, error: insErr } = await sb
+    .from("archived_wines")
+    .insert({
+      name: coerceString(wine.name) ?? "Unknown wine",
+      store: coerceString(wine.store),
+      producer: coerceString(wine.producer),
+      region: coerceString(wine.region),
+      country: coerceString(wine.country),
+      vintage: coerceVintage(wine.vintage),
+      grape: coerceString(wine.grape),
+      color: coerceColor(wine.color),
+      tasting_notes: coerceString(wine.tasting_notes),
+      price_range: coerceString(wine.price_range),
+      price_source: coerceString(wine.price_source),
+      food_pairings: coerceString(wine.food_pairings),
+      drinking_window: coerceString(wine.drinking_window),
+      extra_notes: coerceString(wine.extra_notes),
+      label_image_url: wine.label_image_url,
+      product_image_url: wine.product_image_url,
+      shelf: wine.shelf,
+      position: wine.position,
+      // finished_at defaults to now() in the DB; ratings start null.
+    })
+    .select("*")
+    .single();
   if (insErr) throw new Error(insErr.message);
 
   const { error: delErr } = await sb.from("wines").delete().eq("id", id);
   if (delErr) throw new Error(delErr.message);
 
   revalidatePath("/");
+  return archived as ArchivedWine;
+}
+
+// ── Tasting ratings ────────────────────────────────────────────────────────
+
+// Validate/sanitize one rater's submitted rating into a stored blob, or null
+// if the score is missing/invalid (used to clear a rating). Free-text note is
+// run through coerceString; tags are filtered to the fixed allowed set; score
+// must be a 0.5-step value in [1, 5].
+function normalizeRating(raw: unknown): WineRating | null {
+  if (!raw || typeof raw !== "object") return null;
+  const o = raw as Record<string, unknown>;
+  if (!isValidScore(o.score)) return null;
+  const tags = Array.isArray(o.tags)
+    ? Array.from(
+        new Set(
+          o.tags.filter(
+            (t): t is string => typeof t === "string" && TASTE_TAG_SLUGS.has(t),
+          ),
+        ),
+      )
+    : [];
+  return {
+    score: o.score,
+    tags,
+    note: coerceString(o.note),
+    would_buy_again:
+      typeof o.would_buy_again === "boolean" ? o.would_buy_again : null,
+    rated_at: new Date().toISOString(),
+  };
+}
+
+// Save/edit the two named ratings on an archived bottle. Only the raters
+// present in `ratings` are written (omitted raters are left untouched), so
+// editing one person's rating never clobbers the other's.
+export async function saveArchivedRatings(
+  id: string,
+  ratings: Partial<Record<Rater, unknown>>,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (!id) return { ok: false, error: "Missing id" };
+
+  const patch: Record<string, WineRating | null> = {};
+  if ("yahli" in ratings) patch.yahli_rating = normalizeRating(ratings.yahli);
+  if ("liza" in ratings) patch.liza_rating = normalizeRating(ratings.liza);
+  if (Object.keys(patch).length === 0) return { ok: true };
+
+  const sb = getSupabase();
+  const { error } = await sb.from("archived_wines").update(patch).eq("id", id);
+  if (error) return { ok: false, error: error.message };
+
+  revalidatePath("/");
+  return { ok: true };
 }
 
 // Re-run ONLY the product-image search step of the enrichment workflow for an

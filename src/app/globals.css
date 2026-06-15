@@ -80,3 +80,65 @@ body {
 .safe-pb {
   padding-bottom: calc(2.25rem + env(safe-area-inset-bottom));
 }
+
+/* Tasting-score slider — styled native range, terracotta on cream.
+   The filled portion is set inline via --score-fill (a percentage). */
+.score-range {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 28px; /* generous touch target on iPhone */
+  background: transparent;
+  cursor: pointer;
+  touch-action: pan-y; /* let vertical scroll through; thumb drag is horizontal */
+}
+.score-range::-webkit-slider-runnable-track {
+  height: 8px;
+  border-radius: 9999px;
+  background: linear-gradient(
+    to right,
+    var(--terracotta) 0%,
+    var(--terracotta) var(--score-fill, 50%),
+    var(--surface-subtle) var(--score-fill, 50%),
+    var(--surface-subtle) 100%
+  );
+  border: 1px solid var(--border-soft);
+}
+.score-range::-moz-range-track {
+  height: 8px;
+  border-radius: 9999px;
+  background: var(--surface-subtle);
+  border: 1px solid var(--border-soft);
+}
+.score-range::-moz-range-progress {
+  height: 8px;
+  border-radius: 9999px;
+  background: var(--terracotta);
+}
+.score-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 26px;
+  height: 26px;
+  margin-top: -10px; /* center on the 8px track */
+  border-radius: 9999px;
+  background: #ffffff;
+  border: 2px solid var(--terracotta);
+  box-shadow: 0 4px 10px -3px var(--shadow-warm-strong);
+  transition: transform 120ms ease-out;
+}
+.score-range::-moz-range-thumb {
+  width: 26px;
+  height: 26px;
+  border-radius: 9999px;
+  background: #ffffff;
+  border: 2px solid var(--terracotta);
+  box-shadow: 0 4px 10px -3px var(--shadow-warm-strong);
+}
+.score-range:active::-webkit-slider-thumb {
+  transform: scale(1.12);
+}
+.score-range:focus-visible::-webkit-slider-thumb {
+  outline: 2px solid var(--terracotta);
+  outline-offset: 2px;
+}
