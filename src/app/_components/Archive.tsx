@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useId, useState } from "react";
 import { flushSync } from "react-dom";
 import { useRouter } from "next/navigation";
 import type { ArchivedWine, Rater, WineRating } from "@/lib/types";
@@ -363,10 +363,141 @@ function ArchiveDetail({
   );
 }
 
+// ── Filtering ──────────────────────────────────────────────────────────────
+
+type RatedFilter = "all" | "rated" | "unrated";
+type BuyFilter = "all" | "yes";
+
+// Canonical colour order, borrowed from COLOR_LABEL so the filter stays in step
+// with the labels the rest of the UI uses.
+const CANONICAL_COLORS = Object.keys(COLOR_LABEL);
+
+// ArchivedWine.color is `string | null`, not the WineColor union — it can be
+// null, blank, or something the AI produced that we never anticipated. "" means
+// "no colour recorded", which never matches a specific colour option.
+function colorKey(wine: ArchivedWine): string {
+  return wine.color?.trim() ?? "";
+}
+
+// Mirrors RatedBadges: a bottle counts as rated once either rater has scored it.
+function isRated(wine: ArchivedWine): boolean {
+  return wine.yahli_rating != null || wine.liza_rating != null;
+}
+
+// `=== true` on purpose: would_buy_again is `boolean | null`, and null is "no
+// opinion recorded", which is not the same as a "no".
+function wouldBuyAgain(wine: ArchivedWine): boolean {
+  return (
+    wine.yahli_rating?.would_buy_again === true ||
+    wine.liza_rating?.would_buy_again === true
+  );
+}
+
+// Native <select> so iOS gives us its picker, plus keyboard and screen-reader
+// behaviour, for free. Only the chrome is restyled to match the cream/terracotta
+// system, since the stock control looks wildly different across platforms.
+function FilterSelect({
+  label,
+  value,
+  onChange,
+  children,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  children: React.ReactNode;
+}) {
+  const id = useId();
+  return (
+    <div className="flex flex-col gap-1.5 min-w-0">
+      <label htmlFor={id} className={LABEL_CAPS_CLASS}>
+        {label}
+      </label>
+      <select
+        id={id}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-full appearance-none rounded-full bg-cream-card pl-3.5 pr-9 py-2 text-sm text-text-deep min-h-[44px] transition-colors duration-150 ease-out focus:outline-none focus:ring-2 focus:ring-terracotta/40"
+        style={{
+          border: "1px solid var(--border-soft)",
+          // Chevron has to be a data URI, which can't read --terracotta, so the
+          // hex is repeated here.
+          backgroundImage:
+            "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5 6 6.5 11 1.5' fill='none' stroke='%23c8553d' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E\")",
+          backgroundRepeat: "no-repeat",
+          backgroundPosition: "right 0.85rem center",
+          backgroundSize: "0.7rem",
+          WebkitTapHighlightColor: "transparent",
+          touchAction: "manipulation",
+        }}
+      >
+        {children}
+      </select>
+    </div>
+  );
+}
+
+function NoMatches({ onClear }: { onClear: () => void }) {
+  return (
+    <div className="w-full flex flex-col items-center text-center gap-3 py-14 text-text-muted">
+      <WineGlassIcon className="w-8 h-8" />
+      <p
+        className="italic text-base text-text-muted"
+        style={{ fontFamily: "var(--font-serif)" }}
+      >
+        No bottles match these filters
+      </p>
+      <button
+        type="button"
+        onClick={onClear}
+        className="mt-1 inline-flex items-center justify-center rounded-full px-4 py-2.5 text-sm text-text-muted transition-colors duration-150 ease-out min-h-[44px] hover:text-terracotta"
+        style={{
+          border: "1px solid var(--border-soft)",
+          WebkitTapHighlightColor: "transparent",
+          touchAction: "manipulation",
+        }}
+      >
+        Clear filters
+      </button>
+    </div>
+  );
+}
+
 export default function Archive({ archived }: { archived: ArchivedWine[] }) {
   const router = useRouter();
   const [selected, setSelected] = useState<ArchivedWine | null>(null);
   const [editing, setEditing] = useState<ArchivedWine | null>(null);
+
+  // Filter state is deliberately local: it's a way of looking at the list, not
+  // something worth surviving a tab switch or a refresh.
+  const [colorFilter, setColorFilter] = useState("all");
+  const [ratedFilter, setRatedFilter] = useState<RatedFilter>("all");
+  const [buyFilter, setBuyFilter] = useState<BuyFilter>("all");
+
+  function clearFilters() {
+    setColorFilter("all");
+    setRatedFilter("all");
+    setBuyFilter("all");
+  }
+
+  // Only offer colours that actually appear, canonical ones first and anything
+  // unexpected after, so the list is stable and never has dead options.
+  const presentColors = new Set(
+    archived.map(colorKey).filter((c) => c !== ""),
+  );
+  const colorOptions = [
+    ...CANONICAL_COLORS.filter((c) => presentColors.has(c)),
+    ...[...presentColors].filter((c) => !CANONICAL_COLORS.includes(c)).sort(),
+  ];
+
+  // `archived` arrives newest-finished-first; filter() keeps that order.
+  const filtered = archived.filter((wine) => {
+    if (colorFilter !== "all" && colorKey(wine) !== colorFilter) return false;
+    if (ratedFilter === "rated" && !isRated(wine)) return false;
+    if (ratedFilter === "unrated" && isRated(wine)) return false;
+    if (buyFilter === "yes" && !wouldBuyAgain(wine)) return false;
+    return true;
+  });
 
   if (archived.length === 0) {
     return (
@@ -388,15 +519,60 @@ export default function Archive({ archived }: { archived: ArchivedWine[] }) {
   return (
     <div className="w-full flex flex-col items-center gap-5 sm:gap-6">
       <div className={`${LABEL_CAPS_CLASS} -mb-1`}>Finished</div>
-      <div className="w-full grid grid-cols-2 sm:grid-cols-3 gap-3 sm:gap-4">
-        {archived.map((wine) => (
-          <ArchiveCard
-            key={wine.id}
-            wine={wine}
-            onClick={() => setSelected(wine)}
-          />
-        ))}
+
+      <div className="w-full flex flex-col gap-2.5">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 sm:gap-3">
+          <FilterSelect
+            label="Colour"
+            value={colorFilter}
+            onChange={setColorFilter}
+          >
+            <option value="all">All</option>
+            {colorOptions.map((c) => (
+              <option key={c} value={c}>
+                {COLOR_LABEL[c] ?? c}
+              </option>
+            ))}
+          </FilterSelect>
+
+          <FilterSelect
+            label="Rating"
+            value={ratedFilter}
+            onChange={(v) => setRatedFilter(v as RatedFilter)}
+          >
+            <option value="all">All</option>
+            <option value="rated">Rated</option>
+            <option value="unrated">Not yet rated</option>
+          </FilterSelect>
+
+          <FilterSelect
+            label="Would buy again"
+            value={buyFilter}
+            onChange={(v) => setBuyFilter(v as BuyFilter)}
+          >
+            <option value="all">All</option>
+            <option value="yes">Would buy again</option>
+          </FilterSelect>
+        </div>
+
+        <p className="text-[11px] text-text-muted text-right" aria-live="polite">
+          {filtered.length} of {archived.length}
+        </p>
       </div>
+
+      {filtered.length > 0 ? (
+        <div className="w-full grid grid-cols-2 sm:grid-cols-3 gap-3 sm:gap-4">
+          {filtered.map((wine) => (
+            <ArchiveCard
+              key={wine.id}
+              wine={wine}
+              onClick={() => setSelected(wine)}
+            />
+          ))}
+        </div>
+      ) : (
+        <NoMatches onClear={clearFilters} />
+      )}
 
       {selected && (
         <ArchiveDetail
