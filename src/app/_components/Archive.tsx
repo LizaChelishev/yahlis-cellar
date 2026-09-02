@@ -363,14 +363,23 @@ function ArchiveDetail({
   );
 }
 
-// ── Filtering ──────────────────────────────────────────────────────────────
+// ── Filtering and sorting ──────────────────────────────────────────────────
 
 type RatedFilter = "all" | "rated" | "unrated";
-type BuyFilter = "all" | "yes";
+// The two raters are kept apart here on purpose: the archive exists so each of
+// them can see what the other liked, so collapsing them into one "would buy
+// again" would throw away the distinction the data is built around.
+type BuyFilter = "all" | "yahli" | "liza" | "either" | "both";
+type SortKey = "newest" | "score-yahli" | "score-liza";
 
 // Canonical colour order, borrowed from COLOR_LABEL so the filter stays in step
 // with the labels the rest of the UI uses.
 const CANONICAL_COLORS = Object.keys(COLOR_LABEL);
+
+const SORT_RATER: Record<Exclude<SortKey, "newest">, Rater> = {
+  "score-yahli": "yahli",
+  "score-liza": "liza",
+};
 
 // ArchivedWine.color is `string | null`, not the WineColor union — it can be
 // null, blank, or something the AI produced that we never anticipated. "" means
@@ -384,13 +393,49 @@ function isRated(wine: ArchivedWine): boolean {
   return wine.yahli_rating != null || wine.liza_rating != null;
 }
 
+function ratingOf(wine: ArchivedWine, rater: Rater): WineRating | null {
+  return rater === "yahli" ? wine.yahli_rating : wine.liza_rating;
+}
+
 // `=== true` on purpose: would_buy_again is `boolean | null`, and null is "no
 // opinion recorded", which is not the same as a "no".
-function wouldBuyAgain(wine: ArchivedWine): boolean {
-  return (
-    wine.yahli_rating?.would_buy_again === true ||
-    wine.liza_rating?.would_buy_again === true
-  );
+function buysAgain(wine: ArchivedWine, rater: Rater): boolean {
+  return ratingOf(wine, rater)?.would_buy_again === true;
+}
+
+function matchesBuyFilter(wine: ArchivedWine, filter: BuyFilter): boolean {
+  switch (filter) {
+    case "all":
+      return true;
+    case "either":
+      return buysAgain(wine, "yahli") || buysAgain(wine, "liza");
+    case "both":
+      return buysAgain(wine, "yahli") && buysAgain(wine, "liza");
+    default:
+      return buysAgain(wine, filter);
+  }
+}
+
+function finishedDesc(a: ArchivedWine, b: ArchivedWine): number {
+  return new Date(b.finished_at).getTime() - new Date(a.finished_at).getTime();
+}
+
+// Always returns a new array — the `archived` prop is never sorted in place.
+function sortWines(list: ArchivedWine[], sort: SortKey): ArchivedWine[] {
+  if (sort === "newest") return [...list].sort(finishedDesc);
+
+  const rater = SORT_RATER[sort];
+  return [...list].sort((a, b) => {
+    const scoreA = ratingOf(a, rater)?.score ?? null;
+    const scoreB = ratingOf(b, rater)?.score ?? null;
+    // Bottles this rater hasn't scored sink below the scored ones rather than
+    // counting as a zero, and hold newest-first order among themselves.
+    if (scoreA === null || scoreB === null) {
+      if (scoreA === null && scoreB === null) return finishedDesc(a, b);
+      return scoreA === null ? 1 : -1;
+    }
+    return scoreB - scoreA || finishedDesc(a, b);
+  });
 }
 
 // Native <select> so iOS gives us its picker, plus keyboard and screen-reader
@@ -437,6 +482,80 @@ function FilterSelect({
   );
 }
 
+// Sliders glyph for the Filters pill.
+function SlidersIcon({ className = "" }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M2 4.5h6.5M12.6 4.5H14M2 11.5h1.4M7.5 11.5H14" />
+      <circle cx="10.5" cy="4.5" r="1.7" />
+      <circle cx="5.4" cy="11.5" r="1.7" />
+    </svg>
+  );
+}
+
+// One compact row: the pill that opens the panel, and the filtered count. Kept
+// to a single 44px control so the grid stays high on a phone screen.
+function FilterBar({
+  activeCount,
+  adjusted,
+  onOpen,
+  panelOpen,
+  shown,
+  total,
+}: {
+  activeCount: number;
+  adjusted: boolean;
+  onOpen: () => void;
+  panelOpen: boolean;
+  shown: number;
+  total: number;
+}) {
+  return (
+    <div className="w-full flex items-center justify-between gap-3">
+      <button
+        type="button"
+        onClick={onOpen}
+        aria-haspopup="dialog"
+        aria-expanded={panelOpen}
+        className="inline-flex items-center gap-2 rounded-full px-4 text-sm font-medium min-h-[44px] transition-colors duration-150 ease-out"
+        style={{
+          background: adjusted ? "var(--terracotta)" : "var(--cream-card)",
+          color: adjusted ? "#ffffff" : "var(--text-muted)",
+          border: `1px solid ${adjusted ? "var(--terracotta)" : "var(--border-soft)"}`,
+          boxShadow: adjusted
+            ? "0 2px 8px -4px var(--shadow-warm-strong)"
+            : "none",
+          WebkitTapHighlightColor: "transparent",
+          touchAction: "manipulation",
+        }}
+      >
+        <SlidersIcon className="w-4 h-4 shrink-0" />
+        Filters
+        {activeCount > 0 && (
+          <span
+            className="inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1 rounded-full text-[11px] font-semibold"
+            style={{ background: "rgba(255, 255, 255, 0.24)", color: "#ffffff" }}
+          >
+            {activeCount}
+          </span>
+        )}
+      </button>
+
+      <span className="text-[11px] text-text-muted shrink-0" aria-live="polite">
+        {shown} of {total}
+      </span>
+    </div>
+  );
+}
+
 function NoMatches({ onClear }: { onClear: () => void }) {
   return (
     <div className="w-full flex flex-col items-center text-center gap-3 py-14 text-text-muted">
@@ -468,12 +587,25 @@ export default function Archive({ archived }: { archived: ArchivedWine[] }) {
   const [selected, setSelected] = useState<ArchivedWine | null>(null);
   const [editing, setEditing] = useState<ArchivedWine | null>(null);
 
-  // Filter state is deliberately local: it's a way of looking at the list, not
-  // something worth surviving a tab switch or a refresh.
+  // Filter and sort state is deliberately local: it's a way of looking at the
+  // list, not something worth surviving a tab switch or a refresh.
   const [colorFilter, setColorFilter] = useState("all");
   const [ratedFilter, setRatedFilter] = useState<RatedFilter>("all");
   const [buyFilter, setBuyFilter] = useState<BuyFilter>("all");
+  const [sort, setSort] = useState<SortKey>("newest");
+  const [panelOpen, setPanelOpen] = useState(false);
 
+  // Only the three filters count here — sort changes the order, not the set, so
+  // it never contributes to a number labelled "Filters".
+  const activeFilterCount =
+    (colorFilter !== "all" ? 1 : 0) +
+    (ratedFilter !== "all" ? 1 : 0) +
+    (buyFilter !== "all" ? 1 : 0);
+  // A non-default sort still lights the pill, so a surprising order always has
+  // something on screen explaining itself.
+  const viewAdjusted = activeFilterCount > 0 || sort !== "newest";
+
+  // Resets the filters only, matching what the button says. Sort is left alone.
   function clearFilters() {
     setColorFilter("all");
     setRatedFilter("all");
@@ -490,14 +622,16 @@ export default function Archive({ archived }: { archived: ArchivedWine[] }) {
     ...[...presentColors].filter((c) => !CANONICAL_COLORS.includes(c)).sort(),
   ];
 
-  // `archived` arrives newest-finished-first; filter() keeps that order.
+  // Filter first, then sort the survivors, so the order is over the visible set
+  // rather than the whole archive.
   const filtered = archived.filter((wine) => {
     if (colorFilter !== "all" && colorKey(wine) !== colorFilter) return false;
     if (ratedFilter === "rated" && !isRated(wine)) return false;
     if (ratedFilter === "unrated" && isRated(wine)) return false;
-    if (buyFilter === "yes" && !wouldBuyAgain(wine)) return false;
+    if (!matchesBuyFilter(wine, buyFilter)) return false;
     return true;
   });
+  const visible = sortWines(filtered, sort);
 
   if (archived.length === 0) {
     return (
@@ -520,49 +654,18 @@ export default function Archive({ archived }: { archived: ArchivedWine[] }) {
     <div className="w-full flex flex-col items-center gap-5 sm:gap-6">
       <div className={`${LABEL_CAPS_CLASS} -mb-1`}>Finished</div>
 
-      <div className="w-full flex flex-col gap-2.5">
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 sm:gap-3">
-          <FilterSelect
-            label="Colour"
-            value={colorFilter}
-            onChange={setColorFilter}
-          >
-            <option value="all">All</option>
-            {colorOptions.map((c) => (
-              <option key={c} value={c}>
-                {COLOR_LABEL[c] ?? c}
-              </option>
-            ))}
-          </FilterSelect>
+      <FilterBar
+        activeCount={activeFilterCount}
+        adjusted={viewAdjusted}
+        onOpen={() => setPanelOpen(true)}
+        panelOpen={panelOpen}
+        shown={visible.length}
+        total={archived.length}
+      />
 
-          <FilterSelect
-            label="Rating"
-            value={ratedFilter}
-            onChange={(v) => setRatedFilter(v as RatedFilter)}
-          >
-            <option value="all">All</option>
-            <option value="rated">Rated</option>
-            <option value="unrated">Not yet rated</option>
-          </FilterSelect>
-
-          <FilterSelect
-            label="Would buy again"
-            value={buyFilter}
-            onChange={(v) => setBuyFilter(v as BuyFilter)}
-          >
-            <option value="all">All</option>
-            <option value="yes">Would buy again</option>
-          </FilterSelect>
-        </div>
-
-        <p className="text-[11px] text-text-muted text-right" aria-live="polite">
-          {filtered.length} of {archived.length}
-        </p>
-      </div>
-
-      {filtered.length > 0 ? (
+      {visible.length > 0 ? (
         <div className="w-full grid grid-cols-2 sm:grid-cols-3 gap-3 sm:gap-4">
-          {filtered.map((wine) => (
+          {visible.map((wine) => (
             <ArchiveCard
               key={wine.id}
               wine={wine}
@@ -572,6 +675,90 @@ export default function Archive({ archived }: { archived: ArchivedWine[] }) {
         </div>
       ) : (
         <NoMatches onClear={clearFilters} />
+      )}
+
+      {panelOpen && (
+        // Backdrop dismiss is right here: tapping away from a filter panel is
+        // the expected way out and discards nothing.
+        <Modal onClose={() => setPanelOpen(false)}>
+          <div className="flex flex-col gap-5 px-5 sm:px-8 pt-7 sm:pt-9 safe-pb">
+            <p className={`${LABEL_CAPS_CLASS} pr-9`}>Filter &amp; sort</p>
+
+            <FilterSelect
+              label="Colour"
+              value={colorFilter}
+              onChange={setColorFilter}
+            >
+              <option value="all">All</option>
+              {colorOptions.map((c) => (
+                <option key={c} value={c}>
+                  {COLOR_LABEL[c] ?? c}
+                </option>
+              ))}
+            </FilterSelect>
+
+            <FilterSelect
+              label="Rating"
+              value={ratedFilter}
+              onChange={(v) => setRatedFilter(v as RatedFilter)}
+            >
+              <option value="all">All</option>
+              <option value="rated">Rated</option>
+              <option value="unrated">Not yet rated</option>
+            </FilterSelect>
+
+            <FilterSelect
+              label="Would buy again"
+              value={buyFilter}
+              onChange={(v) => setBuyFilter(v as BuyFilter)}
+            >
+              <option value="all">All</option>
+              {RATERS.map(({ id, label }) => (
+                <option key={id} value={id}>
+                  {label}
+                </option>
+              ))}
+              <option value="either">Either</option>
+              <option value="both">Both</option>
+            </FilterSelect>
+
+            <FilterSelect
+              label="Sort"
+              value={sort}
+              onChange={(v) => setSort(v as SortKey)}
+            >
+              <option value="newest">Newest first</option>
+              {RATERS.map(({ id, label }) => (
+                <option key={id} value={`score-${id}`}>
+                  {`${label}'s score, high to low`}
+                </option>
+              ))}
+            </FilterSelect>
+
+            <div className="flex items-center justify-between gap-2 pt-1">
+              <button
+                type="button"
+                onClick={clearFilters}
+                disabled={activeFilterCount === 0}
+                className="text-sm text-text-muted transition-colors duration-150 ease-out hover:text-text-deep disabled:opacity-50 px-2 py-2.5 min-h-[44px]"
+                style={{ WebkitTapHighlightColor: "transparent" }}
+              >
+                Clear filters
+              </button>
+              <button
+                type="button"
+                onClick={() => setPanelOpen(false)}
+                className="rounded-full bg-terracotta px-5 py-2.5 text-sm font-medium text-white transition-colors duration-150 ease-out hover:bg-terracotta-hover min-h-[44px]"
+                style={{
+                  WebkitTapHighlightColor: "transparent",
+                  touchAction: "manipulation",
+                }}
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </Modal>
       )}
 
       {selected && (
