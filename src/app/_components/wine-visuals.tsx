@@ -98,17 +98,23 @@ export function Chip({
 export function Modal({
   onClose,
   progress = false,
+  dismissOnBackdrop = true,
   children,
 }: {
   onClose: () => void;
   progress?: boolean;
+  // Click-outside-to-dismiss. Right for modals the user opened; wrong for ones
+  // that appear on their own, where a click meant for the previous screen
+  // would land on the backdrop and throw the modal away. Those pass false and
+  // rely on the close button (and their own explicit dismiss action).
+  dismissOnBackdrop?: boolean;
   children: React.ReactNode;
 }) {
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center sm:p-6"
       style={{ backgroundColor: "rgba(250, 246, 239, 0.8)" }}
-      onClick={onClose}
+      onClick={dismissOnBackdrop ? onClose : undefined}
     >
       <div
         className="relative w-full sm:max-w-md max-h-[100dvh] sm:max-h-[90vh] overflow-y-auto rounded-none sm:rounded-2xl"

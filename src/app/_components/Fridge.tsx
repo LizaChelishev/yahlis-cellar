@@ -659,6 +659,12 @@ export default function Fridge({ wines }: { wines: Wine[] }) {
         <RatingEditor
           archived={modal.archived}
           heading="Rate this wine?"
+          // This prompt appears on its own once finishWine resolves, so it can
+          // land under a pointer still aimed at the detail modal's Finish
+          // button. That button sits below where this (shorter) panel ends on
+          // taller viewports, so a backdrop click there would dismiss the
+          // prompt instantly. Dismiss via Skip or the close button only.
+          dismissOnBackdrop={false}
           onClose={close}
           onSaved={() => {
             flushSync(() => setModal({ kind: "none" }));

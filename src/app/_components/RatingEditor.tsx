@@ -44,11 +44,15 @@ export default function RatingEditor({
   heading,
   onClose,
   onSaved,
+  dismissOnBackdrop = true,
 }: {
   archived: ArchivedWine;
   heading: string;
   onClose: () => void;
   onSaved: () => void;
+  // False when the editor opens by itself (the prompt right after finishing a
+  // bottle) rather than because the user asked for it. See Modal.
+  dismissOnBackdrop?: boolean;
 }) {
   // Snapshot of the ratings as the editor opened, for change detection.
   // Lazy useState (not a ref) so it's stable without reading ref.current
@@ -116,7 +120,7 @@ export default function RatingEditor({
     (((form.score ?? 3) - SCORE_MIN) / (SCORE_MAX - SCORE_MIN)) * 100;
 
   return (
-    <Modal onClose={onClose}>
+    <Modal onClose={onClose} dismissOnBackdrop={dismissOnBackdrop}>
       <div className="flex flex-col px-5 sm:px-8 pt-7 sm:pt-9 safe-pb gap-6">
         {/* Header */}
         <header className="flex flex-col gap-1 pr-9">
