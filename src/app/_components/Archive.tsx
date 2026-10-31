@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import type { ArchivedWine, Rater, WineRating } from "@/lib/types";
 import { formatScore, RATERS, tagLabel } from "@/lib/ratings";
 import RatingEditor from "./RatingEditor";
+import ArchivedWineEditor from "./ArchivedWineEditor";
 import {
   bottleTint,
   BottleSilhouette,
@@ -388,10 +389,12 @@ function ArchiveDetail({
   group,
   onClose,
   onEditRating,
+  onEditDetails,
 }: {
   group: WineGroup;
   onClose: () => void;
   onEditRating: (occurrence: ArchivedWine) => void;
+  onEditDetails: () => void;
 }) {
   // Everything static — name, images, origin, notes, price, slot — comes from
   // the representative; none of it changes between tastings.
@@ -479,6 +482,21 @@ function ArchiveDetail({
               from {wine.price_source.trim()}
             </p>
           )}
+          {/* Correcting a misread label. Sits beside the metadata rather than
+              turning the detail view into a form — everything here stays
+              read-only. */}
+          <button
+            type="button"
+            onClick={onEditDetails}
+            className="self-start mt-1 inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs text-text-muted transition-colors duration-150 ease-out min-h-[36px] hover:text-terracotta"
+            style={{
+              border: "1px solid var(--border-soft)",
+              WebkitTapHighlightColor: "transparent",
+              touchAction: "manipulation",
+            }}
+          >
+            Edit details
+          </button>
         </div>
 
         {/* Read-only details */}
@@ -834,6 +852,11 @@ export default function Archive({ archived }: { archived: ArchivedWine[] }) {
   // through — which is also what lets the detail modal stay open across a save.
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
+  // Same identifier-not-snapshot rule as the two above: the group key, resolved
+  // against the current props each render.
+  const [editingDetailsKey, setEditingDetailsKey] = useState<string | null>(
+    null,
+  );
 
   // Filter and sort state is deliberately local: it's a way of looking at the
   // list, not something worth surviving a tab switch or a refresh.
@@ -869,6 +892,10 @@ export default function Archive({ archived }: { archived: ArchivedWine[] }) {
     (selectedKey !== null && groups.find((g) => g.key === selectedKey)) || null;
   const editingWine =
     (editingId !== null && archived.find((w) => w.id === editingId)) || null;
+  const detailsGroup =
+    (editingDetailsKey !== null &&
+      groups.find((g) => g.key === editingDetailsKey)) ||
+    null;
 
   // Only offer colours that actually appear, canonical ones first and anything
   // unexpected after, so the list is stable and never has dead options. Read
@@ -1034,11 +1061,42 @@ export default function Archive({ archived }: { archived: ArchivedWine[] }) {
           back here instead of dumping you out to the grid. With a button per
           tasting, ejecting after every save would make rating a history a
           chore. */}
-      {selectedGroup && !editingWine && (
+      {selectedGroup && !editingWine && !detailsGroup && (
         <ArchiveDetail
           group={selectedGroup}
           onClose={() => setSelectedKey(null)}
           onEditRating={(occurrence) => setEditingId(occurrence.id)}
+          onEditDetails={() => setEditingDetailsKey(selectedGroup.key)}
+        />
+      )}
+
+      {detailsGroup && (
+        <ArchivedWineEditor
+          key={detailsGroup.key}
+          // Every row behind the card, so the edit can't split it in two.
+          ids={detailsGroup.occurrences.map((o) => o.id)}
+          initial={{
+            name: detailsGroup.representative.name,
+            producer: detailsGroup.representative.producer,
+            vintage: detailsGroup.representative.vintage,
+          }}
+          onClose={() => setEditingDetailsKey(null)}
+          onSaved={(saved) => {
+            // selectedKey is derived from name + producer + vintage, so the
+            // rename we just saved invalidates it — and may well have merged
+            // this card into an existing one, which is the point. Recompute
+            // the key from the saved values and follow the bottle there, so
+            // the user lands on the right (possibly newly merged) card.
+            const nextKey = groupKeyOf({
+              ...detailsGroup.representative,
+              ...saved,
+            });
+            flushSync(() => {
+              setEditingDetailsKey(null);
+              setSelectedKey(nextKey);
+            });
+            router.refresh();
+          }}
         />
       )}
 

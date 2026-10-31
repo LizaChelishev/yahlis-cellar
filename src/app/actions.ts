@@ -880,6 +880,45 @@ export async function saveArchivedRatings(
   return { ok: true };
 }
 
+// Correct the identity of an archived bottle: name, producer, vintage. Those
+// are exactly the three fields groupKeyOf uses, so fixing a misread label here
+// is also what merges rows the AI split across two cards.
+//
+// Takes a list of ids because one card can stand for several finished bottles.
+// Writing to just one of them would split the card in two at the moment the
+// user was trying to tidy it up, so the edit applies to every row behind it.
+export async function updateArchivedWines(
+  ids: string[],
+  fields: { name?: unknown; producer?: unknown; vintage?: unknown },
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return { ok: false, error: "Missing ids" };
+  }
+
+  // Same shape as updateWine: a key absent from `fields` is "not submitted"
+  // and left alone; a key present but blank is a deliberate clear.
+  const patch: Record<string, unknown> = {};
+  if ("name" in fields) {
+    const name = coerceString(fields.name);
+    if (!name) return { ok: false, error: "Name cannot be empty" };
+    patch.name = name;
+  }
+  if ("producer" in fields) patch.producer = coerceString(fields.producer);
+  if ("vintage" in fields) patch.vintage = coerceVintage(fields.vintage);
+
+  if (Object.keys(patch).length === 0) return { ok: true };
+
+  const sb = getSupabase();
+  const { error } = await sb
+    .from("archived_wines")
+    .update(patch)
+    .in("id", ids);
+  if (error) return { ok: false, error: error.message };
+
+  revalidatePath("/");
+  return { ok: true };
+}
+
 // Re-run ONLY the product-image search step of the enrichment workflow for an
 // already-saved wine, using its known text details. Reuses the same model,
 // web tools (and their usage caps), retry, and coerceProductImageUrl as the
