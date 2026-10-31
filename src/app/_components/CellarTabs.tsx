@@ -3,7 +3,7 @@
 import { useState } from "react";
 import type { ArchivedWine, Wine } from "@/lib/types";
 import Fridge from "./Fridge";
-import Archive from "./Archive";
+import Archive, { countWineGroups } from "./Archive";
 
 type Tab = "cabinet" | "archive";
 
@@ -15,6 +15,9 @@ export default function CellarTabs({
   archived: ArchivedWine[];
 }) {
   const [tab, setTab] = useState<Tab>("cabinet");
+  // Cards, not rows: the Archive merges repeat bottles into one card per wine,
+  // so counting rows here would disagree with its own "N of M".
+  const archivedGroupCount = countWineGroups(archived);
 
   return (
     <div className="w-full flex flex-col items-center gap-6 sm:gap-7">
@@ -53,8 +56,8 @@ export default function CellarTabs({
               }}
             >
               {label}
-              {id === "archive" && archived.length > 0 && (
-                <span className="text-text-muted"> · {archived.length}</span>
+              {id === "archive" && archivedGroupCount > 0 && (
+                <span className="text-text-muted"> · {archivedGroupCount}</span>
               )}
             </button>
           );

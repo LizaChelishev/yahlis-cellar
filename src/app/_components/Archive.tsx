@@ -111,6 +111,15 @@ function buildGroups(archived: ArchivedWine[]): WineGroup[] {
   });
 }
 
+// How many cards the archive will render. Exported for the tab badge in
+// CellarTabs, so the badge and the filter bar's "N of M" agree instead of one
+// counting rows and the other counting merged wines. Shares groupKeyOf with
+// buildGroups rather than reimplementing it — only the distinct keys matter
+// here, so there's no need to assemble the groups themselves.
+export function countWineGroups(archived: ArchivedWine[]): number {
+  return new Set(archived.map(groupKeyOf)).size;
+}
+
 // Small Y / L badges showing which raters have rated (filled = rated). Takes
 // the occurrences rather than one row so a badge fills when that rater rated
 // any tasting of the wine, not just the most recent one.
