@@ -264,6 +264,10 @@ function ArchiveCard({
         )}
       </div>
       <div className="flex flex-col gap-1 px-3 pb-3 pt-1">
+        {/* Keep this span free of vertical padding: overflow: hidden clips at
+            the padding box, so a pb- or py- utility here would widen the clip
+            past line two and paint a slice of line three. The wrapper carries
+            the padding. */}
         <span
           className="text-sm leading-snug text-text-deep line-clamp-2"
           style={{ fontFamily: "var(--font-serif)" }}

@@ -701,15 +701,20 @@ function SilhouetteSlotContent({
   name: string;
 }) {
   return (
-    <div className="w-full h-full flex flex-col items-center justify-center px-1 gap-1 pointer-events-none">
+    <div className="w-full h-full flex flex-col items-center justify-center px-1 pb-1 gap-1 pointer-events-none">
       <div className="flex-1 min-h-0 w-full flex items-center justify-center pt-1 pointer-events-none">
         <BottleSilhouette
           tint={tint}
           className="h-full max-w-full pointer-events-none"
         />
       </div>
+      {/* pb-1 lives on the parent, not here: -webkit-line-clamp sizes this box
+          to two lines but doesn't stop later lines laying out, and
+          overflow: hidden clips at the padding box — so bottom padding on this
+          element pushes the clip edge past line two and paints a slice of
+          line three. */}
       <span
-        className="italic text-[8px] leading-tight line-clamp-2 text-center text-text-muted pb-1 px-0.5 pointer-events-none"
+        className="italic text-[8px] leading-tight line-clamp-2 text-center text-text-muted px-0.5 pointer-events-none"
         style={{ fontFamily: "var(--font-serif)" }}
       >
         {name}
@@ -728,7 +733,7 @@ function ProductSlotContent({
   onImgError: () => void;
 }) {
   return (
-    <div className="w-full h-full flex flex-col items-center justify-center px-1 gap-1 pointer-events-none">
+    <div className="w-full h-full flex flex-col items-center justify-center px-1 pb-1 gap-1 pointer-events-none">
       <div
         className="flex-1 min-h-0 w-full flex items-center justify-center pt-1 pointer-events-none"
         style={{
@@ -747,8 +752,13 @@ function ProductSlotContent({
           />
         </div>
       </div>
+      {/* pb-1 lives on the parent, not here: -webkit-line-clamp sizes this box
+          to two lines but doesn't stop later lines laying out, and
+          overflow: hidden clips at the padding box — so bottom padding on this
+          element pushes the clip edge past line two and paints a slice of
+          line three. */}
       <span
-        className="italic text-[8px] leading-tight line-clamp-2 text-center text-text-muted pb-1 px-0.5 pointer-events-none"
+        className="italic text-[8px] leading-tight line-clamp-2 text-center text-text-muted px-0.5 pointer-events-none"
         style={{ fontFamily: "var(--font-serif)" }}
       >
         {name}
