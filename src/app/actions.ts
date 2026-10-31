@@ -887,17 +887,32 @@ export async function saveArchivedRatings(
 // Takes a list of ids because one card can stand for several finished bottles.
 // Writing to just one of them would split the card in two at the moment the
 // user was trying to tidy it up, so the edit applies to every row behind it.
+// On success `saved` is exactly what was written, post-coercion. The client
+// needs it to recompute the group key, and coerceString is not identity —
+// it strips tags and collapses runs of whitespace — so a caller guessing at
+// the stored value would compute a key that matches no row. Handing the
+// values back keeps the coercion rules defined once, here.
 export async function updateArchivedWines(
   ids: string[],
   fields: { name?: unknown; producer?: unknown; vintage?: unknown },
-): Promise<{ ok: true } | { ok: false; error: string }> {
+): Promise<
+  | {
+      ok: true;
+      saved: { name?: string; producer?: string | null; vintage?: number | null };
+    }
+  | { ok: false; error: string }
+> {
   if (!Array.isArray(ids) || ids.length === 0) {
     return { ok: false, error: "Missing ids" };
   }
 
   // Same shape as updateWine: a key absent from `fields` is "not submitted"
   // and left alone; a key present but blank is a deliberate clear.
-  const patch: Record<string, unknown> = {};
+  const patch: {
+    name?: string;
+    producer?: string | null;
+    vintage?: number | null;
+  } = {};
   if ("name" in fields) {
     const name = coerceString(fields.name);
     if (!name) return { ok: false, error: "Name cannot be empty" };
@@ -906,7 +921,8 @@ export async function updateArchivedWines(
   if ("producer" in fields) patch.producer = coerceString(fields.producer);
   if ("vintage" in fields) patch.vintage = coerceVintage(fields.vintage);
 
-  if (Object.keys(patch).length === 0) return { ok: true };
+  // Nothing submitted: `saved` is empty, so the caller's spread is a no-op.
+  if (Object.keys(patch).length === 0) return { ok: true, saved: patch };
 
   const sb = getSupabase();
   const { error } = await sb
@@ -916,7 +932,7 @@ export async function updateArchivedWines(
   if (error) return { ok: false, error: error.message };
 
   revalidatePath("/");
-  return { ok: true };
+  return { ok: true, saved: patch };
 }
 
 // Re-run ONLY the product-image search step of the enrichment workflow for an

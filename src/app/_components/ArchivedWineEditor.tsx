@@ -26,7 +26,9 @@ export default function ArchivedWineEditor({
   ids: string[];
   initial: ArchivedWineIdentity;
   onClose: () => void;
-  onSaved: (saved: ArchivedWineIdentity) => void;
+  // Partial: only the fields actually submitted come back, which is exactly
+  // what the caller spreads over the representative to recompute its key.
+  onSaved: (saved: Partial<ArchivedWineIdentity>) => void;
 }) {
   const [name, setName] = useState(initial.name);
   const [producer, setProducer] = useState(initial.producer ?? "");
@@ -54,21 +56,10 @@ export default function ArchivedWineEditor({
       return;
     }
 
-    // Mirror the action's coercion so the caller can recompute the group key
-    // from exactly what was written, rather than from the raw input.
-    const trimmedProducer = producer.trim();
-    const parsedVintage = Number(vintage.trim());
-    onSaved({
-      name: name.trim(),
-      producer: trimmedProducer === "" ? null : trimmedProducer,
-      vintage:
-        vintage.trim() !== "" &&
-        Number.isFinite(parsedVintage) &&
-        Math.trunc(parsedVintage) >= 1800 &&
-        Math.trunc(parsedVintage) <= 2100
-          ? Math.trunc(parsedVintage)
-          : null,
-    });
+    // The action hands back what it actually wrote, so the group key is
+    // recomputed from the stored values rather than from a second copy of the
+    // coercion rules here.
+    onSaved(res.saved);
   }
 
   return (
